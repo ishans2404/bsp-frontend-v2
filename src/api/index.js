@@ -486,10 +486,26 @@ export async function fetchRakeInfo(rakeId) {
 }
 
 // ══════════════════════════════════════════════════════════════════
-//  SUBMIT LOADING — JSON export until backend ready
+//  SUBMIT LOADING
 // ══════════════════════════════════════════════════════════════════
-export async function submitLoadingSession(_sessionPayload) {
-  await new Promise(r => setTimeout(r, 1200))
-  return { success: true, referenceNo: `REF-${Date.now()}` }
+export async function submitWagonLoad(payload) {
+  try {
+    console.log('Submitting wagon load:', payload)
+    const jsonString = JSON.stringify(payload)
+    const base64Encoded = btoa(jsonString)
+
+    const url = `${PROXY}/postPlatesData.jsp?jsonB64=${encodeURIComponent(base64Encoded)}`
+
+    const res = await fetch(url, {
+      method: 'GET',
+    })
+
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return { success: true }
+
+  } catch (err) {
+    console.error('submitWagonLoad failed:', err.message)
+    throw err
+  }
 }
 

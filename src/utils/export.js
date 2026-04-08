@@ -255,7 +255,64 @@ export async function generateLoadingPdf(session) {
       const loadedPlates = c.plates.filter(p => p.loaded)
       if (!loadedPlates.length) continue
 
-      const wagonsForCons = [...new Set(loadedPlates.map(p => p.wagonNo).filter(Boolean))]
+      // Sort and group plates by wagon number for a single table with section dividers
+      const sortedPlates = [...loadedPlates].sort((a, b) => {
+        const wagA = (a.wagonNo || '').trim() || '~~~'
+        const wagB = (b.wagonNo || '').trim() || '~~~'
+        const wagonCompare = wagA.localeCompare(wagB, undefined, { numeric: true, sensitivity: 'base' })
+        if (wagonCompare !== 0) return wagonCompare
+
+        const plateCompare = String(a.plateNo || '').localeCompare(String(b.plateNo || ''), undefined, { numeric: true, sensitivity: 'base' })
+        if (plateCompare !== 0) return plateCompare
+
+        return String(a.loadedAt || '').localeCompare(String(b.loadedAt || ''))
+      })
+
+      const wagonsForCons = [...new Set(sortedPlates.map(p => (p.wagonNo || '').trim()).filter(Boolean))]
+      if (sortedPlates.some(p => !(p.wagonNo || '').trim())) {
+        wagonsForCons.push('Unassigned')
+      }
+
+      const groupedRows = []
+      let currentWagonLabel = null
+      let plateSerial = 0
+
+      sortedPlates.forEach(p => {
+        const wagonNo = (p.wagonNo || '').trim()
+        const wagonLabel = wagonNo || 'Unassigned'
+
+        if (wagonLabel !== currentWagonLabel) {
+          groupedRows.push([
+            {
+              content: wagonNo ? `Wagon No.: ${wagonLabel}` : 'Wagon No.: Unassigned',
+              colSpan: 9,
+              styles: {
+                fillColor: [236, 240, 244],
+                textColor: [54, 63, 78],
+                fontStyle: 'bold',
+                fontSize: 7.3,
+                cellPadding: { top: 2, bottom: 2, left: 4, right: 4 },
+                lineWidth: { top: 0.25, bottom: 0.25 },
+                lineColor: [178, 188, 202],
+              },
+            },
+          ])
+          currentWagonLabel = wagonLabel
+        }
+
+        plateSerial += 1
+        groupedRows.push([
+          plateSerial,
+          p.plateNo  || '—',
+          p.plateType !== 'OK' ? p.plateType : '',
+          p.heatNo   || '—',
+          p.grade    || '—',
+          p.ordSize  || '—',
+          p.pcWgt != null ? Number(p.pcWgt).toFixed(3) : '—',
+          p.tdc      || '—',
+          p.wagonNo  || '—',
+        ])
+      })
 
       if (y > PH - 30) { doc.addPage(); drawPageHeader(); y = 23 }
 
@@ -266,17 +323,7 @@ export async function generateLoadingPdf(session) {
           [{ content: `Wagon(s): ${wagonsForCons.join(', ') || 'N/A'}   |   Plates loaded: ${loadedPlates.length}`, colSpan: 9 }],
           ['Sl.', 'Plate No.', 'Type', 'Heat No.', 'Grade', 'Size (mm)', 'Wt. (T)', 'TDC', 'Wagon No.'],
         ],
-        body: loadedPlates.map((p, idx) => [
-          idx + 1,
-          p.plateNo  || '—',
-          p.plateType !== 'OK' ? p.plateType : '',
-          p.heatNo   || '—',
-          p.grade    || '—',
-          p.ordSize  || '—',
-          p.pcWgt != null ? Number(p.pcWgt).toFixed(3) : '—',
-          p.tdc      || '—',
-          p.wagonNo  || '—',
-        ]),
+        body: groupedRows,
         headStyles: { fillColor: [27, 56, 101], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 8 },
         didParseCell(data) {
           if (data.section === 'head') {
@@ -422,4 +469,77 @@ function formatDateTimeFull(iso) {
   if (!iso) return '—'
   const d = new Date(iso)
   return d.toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })
+}
+
+// ── Wagon-wise submission ─────────────────────────────────────────
+const FAILED_SUBMISSIONS_KEY = 'bsp_failed_submissions'
+
+export function buildWagonPayloads(session) {
+  const allSessions = session.allSessions
+    ? Object.values(session.allSessions)
+    : [session]
+
+  const rakeWagons = session.wagons || []
+  const payloads = []
+
+  for (const sess of allSessions) {
+    for (const wagon of rakeWagons) {
+      if (!wagon.consigneeCode) continue
+      const cons = sess.consignees.find(c => c.consigneeCode === wagon.consigneeCode)
+      if (!cons) continue
+
+      const loadedPlates = cons.plates.filter(p => p.loaded && p.wagonNo === wagon.wagonNo)
+      if (!loadedPlates.length) continue
+
+      payloads.push({
+        rakeId:          session.rakeId,
+        wagonNo:         wagon.wagonNo,
+        consigneeCode:   cons.consigneeCode,
+        destinationCode: sess.destination?.code || null,
+        operatedBy:      session.operatedBy || 'admin',
+        completedAt:     session.completedAt || new Date().toISOString(),
+        plateNo: loadedPlates.map(p => p.plateNo),
+      })
+    }
+  }
+
+  return payloads
+}
+
+export async function submitWagonRequests(payloads, submitFn, onProgress) {
+  const results = { succeeded: [], failed: [] }
+
+  await Promise.allSettled(
+    payloads.map(async (payload) => {
+      try {
+        await submitFn(payload)
+        results.succeeded.push(payload)
+      } catch (err) {
+        results.failed.push({ payload, error: err.message })
+      }
+      onProgress?.({
+        succeeded: results.succeeded.length,
+        failed:    results.failed.length,
+        total:     payloads.length,
+      })
+    })
+  )
+
+  if (results.failed.length > 0) {
+    try {
+      localStorage.setItem(FAILED_SUBMISSIONS_KEY, JSON.stringify(results.failed))
+    } catch {}
+  } else {
+    localStorage.removeItem(FAILED_SUBMISSIONS_KEY)
+  }
+
+  return results
+}
+
+export function loadFailedSubmissions() {
+  try { return JSON.parse(localStorage.getItem(FAILED_SUBMISSIONS_KEY) || '[]') } catch { return [] }
+}
+
+export function clearFailedSubmissions() {
+  localStorage.removeItem(FAILED_SUBMISSIONS_KEY)
 }

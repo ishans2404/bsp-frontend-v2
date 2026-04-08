@@ -314,6 +314,10 @@ img { display: block; max-width: 100%; }
   width: 7px; height: 7px;
   border-radius: 50%;
   background: var(--green-600);
+  transition: background var(--transition);
+}
+.topbar-chip .dot.offline {
+  background: var(--red-600);
 }
 .topbar-user-btn {
   display: flex;

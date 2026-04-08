@@ -23,11 +23,24 @@ const NAV_ITEMS = [
 export default function AppShell({ children, pageTitle }) {
   const [collapsed, setCollapsed] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
+  const [isOnline, setIsOnline] = useState(navigator.onLine)
   const { user, logout } = useAuth()
   const location = useLocation()
 
   // Close mobile sidebar on route change
   useEffect(() => { setMobileOpen(false) }, [location.pathname])
+
+  // Detect connectivity status
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true)
+    const handleOffline = () => setIsOnline(false)
+    window.addEventListener('online', handleOnline)
+    window.addEventListener('offline', handleOffline)
+    return () => {
+      window.removeEventListener('online', handleOnline)
+      window.removeEventListener('offline', handleOffline)
+    }
+  }, [])
 
   // Detect small screen for auto-collapse
   useEffect(() => {
@@ -112,8 +125,8 @@ export default function AppShell({ children, pageTitle }) {
 
           <div className="topbar-actions">
             <div className="topbar-chip">
-              <span className="dot" />
-              System Online
+              <span className={`dot ${isOnline ? 'online' : 'offline'}`} />
+              System {isOnline ? 'Online' : 'Offline'}
             </div>
             <div className="topbar-user-btn">
               <div className="topbar-avatar">

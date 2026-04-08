@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useLocation } from 'react-router-dom'
 import AppShell from '../components/layout/AppShell.jsx'
-import { fetchRakeInfo, fetchLoadingReport, fetchPlateInfo } from '../api/index.js'
-import { exportSessionJson, generateLoadingPdf } from '../utils/export.js'
+import { fetchRakeInfo, fetchLoadingReport, fetchPlateInfo, submitWagonLoad } from '../api/index.js'
+import { exportSessionJson, generateLoadingPdf, buildWagonPayloads, submitWagonRequests } from '../utils/export.js'
 import { useToast } from '../context/ToastContext.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
 
@@ -59,6 +59,7 @@ export default function LoadingOperationsPage() {
   const [activeWagon, setActiveWagon] = useState(null)
   const [plateDetail, setPlateDetail] = useState(null)
   const [exporting, setExporting] = useState(false)
+  const [submission, setSubmission] = useState({ status: 'idle', succeeded: 0, failed: 0, total: 0, failedPayloads: [] })
   const [loadingDestCode, setLoadingDestCode] = useState(null)
 
   const quickEntryRef = useRef(null)
@@ -494,10 +495,9 @@ export default function LoadingOperationsPage() {
     } catch { /* show existing data only */ }
   }
 
-  function handleComplete() {
+  async function handleComplete() {
     const allSessions = { ...sessions, [session.destination.code]: session }
-    
-    // Calculate total wagons with loaded plates across all destinations
+
     const wagonsLoaded = Array.from(new Set(
       Object.values(allSessions)
         .flatMap(s => s.consignees)
@@ -505,7 +505,7 @@ export default function LoadingOperationsPage() {
         .filter(p => p.loaded && p.wagonNo)
         .map(p => p.wagonNo)
     )).length
-    
+
     if (!window.confirm(`${wagonsLoaded} wagons loaded. Proceed to complete?`)) return
     const done = { ...session, allSessions, wagons, completedAt: new Date().toISOString(), step: 'COMPLETED' }
     setSession(done)
@@ -514,6 +514,40 @@ export default function LoadingOperationsPage() {
     setStep('COMPLETED')
     localStorage.removeItem(SESSION_KEY)
     localStorage.removeItem(SESSIONS_MAP_KEY)
+
+    const payloads = buildWagonPayloads(done)
+    if (!payloads.length) return
+    setSubmission({ status: 'submitting', succeeded: 0, failed: 0, total: payloads.length, failedPayloads: [] })
+
+    const results = await submitWagonRequests(payloads, submitWagonLoad, ({ succeeded, failed, total }) => {
+      setSubmission(prev => ({ ...prev, succeeded, failed, total }))
+    })
+
+    setSubmission({
+      status:         results.failed.length === 0 ? 'done' : 'partial',
+      succeeded:      results.succeeded.length,
+      failed:         results.failed.length,
+      total:          payloads.length,
+      failedPayloads: results.failed.map(f => f.payload),
+    })
+  }
+
+  async function handleRetrySubmission() {
+    const payloads = submission.failedPayloads
+    if (!payloads.length) return
+    setSubmission(prev => ({ ...prev, status: 'submitting', succeeded: 0, failed: 0, total: payloads.length, failedPayloads: [] }))
+
+    const results = await submitWagonRequests(payloads, submitWagonLoad, ({ succeeded, failed, total }) => {
+      setSubmission(prev => ({ ...prev, succeeded, failed, total }))
+    })
+
+    setSubmission({
+      status:         results.failed.length === 0 ? 'done' : 'partial',
+      succeeded:      results.succeeded.length,
+      failed:         results.failed.length,
+      total:          payloads.length,
+      failedPayloads: results.failed.map(f => f.payload),
+    })
   }
 
   async function handleExportJson() {
@@ -564,7 +598,13 @@ export default function LoadingOperationsPage() {
       )
     })
     .sort((a, b) => {
-      if (a.loaded === b.loaded) return 0
+      if (a.loaded === b.loaded) {
+        // Group by wagon number
+        const wagonA = a.wagonNo || ''
+        const wagonB = b.wagonNo || ''
+        if (wagonA !== wagonB) return wagonA.localeCompare(wagonB)
+        return 0
+      }
       return a.loaded ? -1 : 1   // loaded plates float to top
     })
 
@@ -580,7 +620,13 @@ export default function LoadingOperationsPage() {
         )
       })
       .sort((a, b) => {
-        if (a.loaded === b.loaded) return 0
+        if (a.loaded === b.loaded) {
+          // Group by wagon number
+          const wagonA = a.wagonNo || ''
+          const wagonB = b.wagonNo || ''
+          if (wagonA !== wagonB) return wagonA.localeCompare(wagonB)
+          return 0
+        }
         return a.loaded ? -1 : 1
       })
     : []
@@ -601,6 +647,40 @@ export default function LoadingOperationsPage() {
   const completedLoadedWeight = completedConsignees.reduce((s, c) =>
     s + c.plates.filter(p => p.loaded && p.pcWgt).reduce((ws, p) => ws + (parseFloat(p.pcWgt) || 0), 0), 0)
   const completedConsigneesWithLoads = completedConsignees.filter(c => c.plates.some(p => p.loaded)).length
+
+  // Build wagon-wise summary (one row per wagon)
+  const wagonSummary = (() => {
+    const wagonMap = {}
+    const allSessions = step === 'COMPLETED' && session?.allSessions
+      ? session.allSessions
+      : session ? { [session.destination?.code]: session } : {}
+    
+    Object.values(allSessions).forEach(sess => {
+      if (!sess) return
+      sess.consignees?.forEach(consignee => {
+        consignee.plates?.forEach(plate => {
+          if (plate.loaded && plate.wagonNo) {
+            if (!wagonMap[plate.wagonNo]) {
+              wagonMap[plate.wagonNo] = {
+                wagonNo: plate.wagonNo,
+                consigneeCode: consignee.consigneeCode,
+                consigneeName: consignee.consigneeName,
+                destination: sess.destination,
+                platesCount: 0,
+                totalWeight: 0,
+              }
+            }
+            wagonMap[plate.wagonNo].platesCount++
+            if (plate.pcWgt) {
+              wagonMap[plate.wagonNo].totalWeight += parseFloat(plate.pcWgt) || 0
+            }
+          }
+        })
+      })
+    })
+    
+    return Object.values(wagonMap).sort((a, b) => a.wagonNo.localeCompare(b.wagonNo))
+  })()
 
   return (
     <AppShell pageTitle="Loading Operations">
@@ -883,74 +963,95 @@ export default function LoadingOperationsPage() {
                           return (
                             <div
                               key={w.wagonNo}
-                              onClick={() => canSelect
-                                ? handleSelectWagon(w.wagonNo)
-                                : toast.error(`Wagon ${w.wagonNo} is assigned to ${assignedCons?.consigneeName || w.consigneeCode}`)
-                              }
                               style={{
-                                display: 'flex', flexDirection: 'column', gap: 5,
-                                padding: '7px 8px',
+                                display: 'flex', gap: 4, alignItems: 'stretch',
                                 borderRadius: 'var(--r-md)',
-                                border: `1.5px solid ${isActive ? 'var(--navy-400)' : canSelect ? 'var(--border-subtle)' : 'var(--border-default)'}`,
-                                background: isActive ? 'var(--navy-100)' : canSelect ? 'var(--bg-surface)' : 'var(--gray-50)',
-                                cursor: canSelect ? 'pointer' : 'not-allowed',
-                                opacity: !canSelect ? 0.55 : 1,
-                                userSelect: 'none',
+                                overflow: 'hidden',
                               }}
                             >
-                              {/* Header: Wagon# and Load Stats */}
-                              <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, width: '100%' }}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: 3, flex: 1, minWidth: 0 }}>
-                                  <WagonIcon size={11} style={{ flexShrink: 0 }} />
-                                  <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: 11.5, color: isActive ? 'var(--navy-700)' : 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                    {w.wagonNo}
-                                  </span>
-                                </div>
-                                {platesLoaded > 0 && (
-                                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 3, flexShrink: 0 }}>
-                                    <span style={{ fontSize: 9.5, color: 'var(--green-700)', fontWeight: 700, fontFamily: 'var(--font-mono)' }}>
-                                      {platesLoaded} Plates /
+                              {/* Wagon Content - 80% */}
+                              <div
+                                onClick={() => canSelect
+                                  ? handleSelectWagon(w.wagonNo)
+                                  : toast.error(`Wagon ${w.wagonNo} is assigned to ${assignedCons?.consigneeName || w.consigneeCode}`)
+                                }
+                                style={{
+                                  flex: '0 0 calc(100% - 32px)',
+                                  display: 'flex', flexDirection: 'column', gap: 5,
+                                  padding: '7px 8px',
+                                  borderRadius: 'var(--r-md)',
+                                  border: `1.5px solid ${isActive ? 'var(--navy-400)' : canSelect ? 'var(--border-subtle)' : 'var(--border-default)'}`,
+                                  background: isActive ? 'var(--navy-100)' : canSelect ? 'var(--bg-surface)' : 'var(--gray-50)',
+                                  cursor: canSelect ? 'pointer' : 'not-allowed',
+                                  opacity: !canSelect ? 0.55 : 1,
+                                  userSelect: 'none',
+                                }}
+                              >
+                                {/* Header: Wagon# and Load Stats */}
+                                <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, width: '100%' }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: 3, flex: 1, minWidth: 0 }}>
+                                    <WagonIcon size={11} style={{ flexShrink: 0 }} />
+                                    <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: 11.5, color: isActive ? 'var(--navy-700)' : 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                      {w.wagonNo}
                                     </span>
-                                    {totalLoadedWeight > 0 && (
-                                      <span style={{ fontSize: 9, color: 'var(--green-700)', fontWeight: 600, fontFamily: 'var(--font-mono)' }}>
-                                        {totalLoadedWeight.toFixed(1)}T
-                                      </span>
-                                    )}
                                   </div>
-                                )}
-                              </div>
+                                  {platesLoaded > 0 && (
+                                    <div style={{ display: 'flex', alignItems: 'baseline', gap: 3, flexShrink: 0 }}>
+                                      <span style={{ fontSize: 9.5, color: 'var(--green-700)', fontWeight: 700, fontFamily: 'var(--font-mono)' }}>
+                                        {platesLoaded} Plates /
+                                      </span>
+                                      {totalLoadedWeight > 0 && (
+                                        <span style={{ fontSize: 9, color: 'var(--green-700)', fontWeight: 600, fontFamily: 'var(--font-mono)' }}>
+                                          {totalLoadedWeight.toFixed(1)}T
+                                        </span>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
 
-                              {/* Consignee and Actions */}
-                              <div style={{ display: 'flex', alignItems: 'center', gap: 4, width: '100%' }}>
-                                <div style={{ flex: 1, minWidth: 0 }}>
+                                {/* Consignee Info */}
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
                                   {assignedCons ? (
-                                    <div style={{ fontSize: 10, color: isForActiveCons ? 'var(--navy-600)' : 'var(--text-muted)', fontWeight: isForActiveCons ? 600 : 400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                    <div style={{ fontSize: 10, color: isForActiveCons ? 'var(--navy-600)' : 'var(--text-muted)', fontWeight: isForActiveCons ? 600 : 400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0 }}>
                                       {assignedCons.consigneeName}
                                     </div>
                                   ) : (
                                     <div style={{ fontSize: 9.5, color: 'var(--text-muted)', fontStyle: 'italic' }}>Unassigned</div>
                                   )}
-                                </div>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
                                   {isActive && (
-                                    <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--navy-500)' }} />
-                                  )}
-                                  {isForActiveCons && (
-                                    <button
-                                      title="Unlink wagon from this consignee"
-                                      onClick={e => { e.stopPropagation(); handleUnlinkWagon(w.wagonNo) }}
-                                      style={{
-                                        background: 'none', border: 'none', cursor: 'pointer',
-                                        color: 'var(--red-600)', padding: '1px 2px',
-                                        fontSize: 12, lineHeight: 1, borderRadius: 2,
-                                        display: 'flex', alignItems: 'center',
-                                      }}
-                                    >
-                                      <UnlinkIcon size={10} />
-                                    </button>
+                                    <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--navy-500)', flexShrink: 0 }} />
                                   )}
                                 </div>
                               </div>
+
+                              {/* Unlink Button - 20% */}
+                              {isForActiveCons && (
+                                <button
+                                  title="Unlink wagon from this consignee"
+                                  onClick={e => { e.stopPropagation(); handleUnlinkWagon(w.wagonNo) }}
+                                  style={{
+                                    flex: '0 0 32px',
+                                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                    background: 'var(--red-50)',
+                                    border: '1.5px solid var(--red-200)',
+                                    borderRadius: 'var(--r-md)',
+                                    cursor: 'pointer',
+                                    color: 'var(--red-600)',
+                                    padding: 0,
+                                    transition: 'all 0.15s ease',
+                                  }}
+                                  onMouseEnter={e => {
+                                    e.currentTarget.style.background = 'var(--red-100)'
+                                    e.currentTarget.style.borderColor = 'var(--red-300)'
+                                  }}
+                                  onMouseLeave={e => {
+                                    e.currentTarget.style.background = 'var(--red-50)'
+                                    e.currentTarget.style.borderColor = 'var(--red-200)'
+                                  }}
+                                >
+                                  <span style={{ fontSize: 16, fontWeight: 600, lineHeight: 1 }}>×</span>
+                                </button>
+                              )}
                             </div>
                           )
                         })}
@@ -1058,47 +1159,75 @@ export default function LoadingOperationsPage() {
                       </div>
                     )}
 
-                    {visibleOkPlates.map(p => (
-                      <div
-                        key={p.plateNo}
-                        className={`plate-item ${p.loaded ? 'loaded' : ''}`}
-                        onClick={() => togglePlate(activeCode, p.plateNo)}
-                        style={{ display: 'flex', alignItems: 'center', gap: 10 }}
-                      >
-                        <div className="plate-check">{p.loaded && <CheckIcon size={11} />}</div>
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-                            <span className="plate-no" style={{ fontSize: 13 }}>{p.plateNo}</span>
-                            <span style={{ fontSize: 10.5, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>{p.heatNo}</span>
+                    {visibleOkPlates.length > 0 ? visibleOkPlates.map((p, idx) => {
+                      const currentWagon = p.wagonNo || '(No Wagon)'
+                      const prevWagon = idx > 0 ? (visibleOkPlates[idx - 1].wagonNo || '(No Wagon)') : null
+                      const showWagonHeader = currentWagon !== prevWagon
+
+                      return (
+                        <React.Fragment key={p.plateNo}>
+                          {showWagonHeader && (
+                            <div style={{
+                              margin: '10px 0 5px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 8,
+                              paddingLeft: 4,
+                              borderLeft: `3px solid ${p.wagonNo ? 'var(--navy-400)' : 'var(--border-subtle)'}`
+                            }}>
+                              <WagonIcon size={13} style={{ color: p.wagonNo ? 'var(--navy-600)' : 'var(--text-muted)' }} />
+                              <span style={{
+                                fontSize: 11.5,
+                                fontFamily: 'var(--font-mono)',
+                                fontWeight: 700,
+                                color: p.wagonNo ? 'var(--navy-700)' : 'var(--text-muted)',
+                                minWidth: 60
+                              }}>
+                                {currentWagon}
+                              </span>
+                            </div>
+                          )}
+                          <div
+                            className={`plate-item ${p.loaded ? 'loaded' : ''}`}
+                            onClick={() => togglePlate(activeCode, p.plateNo)}
+                            style={{ display: 'flex', alignItems: 'center', gap: 10 }}
+                          >
+                            <div className="plate-check">{p.loaded && <CheckIcon size={11} />}</div>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                                <span className="plate-no" style={{ fontSize: 13 }}>{p.plateNo}</span>
+                                <span style={{ fontSize: 10.5, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>{p.heatNo}</span>
+                              </div>
+                              <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 1 }}>
+                                <span className="plate-grade" style={{ marginRight: 6 }}>{p.grade}</span>
+                                {p.ordSize && <span style={{ color: 'var(--text-muted)' }}>{p.ordSize}</span>}
+                                {p.pcWgt && <span style={{ color: 'var(--text-muted)', marginLeft: 6 }}>{p.pcWgt}T</span>}
+                              </div>
+                              {p.tdc && <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 1 }}>TDC: {p.tdc}</div>}
+                            </div>
+                            {p.colourCd && (
+                              <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 'var(--r-full)', background: 'var(--gray-100)', color: 'var(--text-secondary)', whiteSpace: 'nowrap', fontWeight: 500 }}>
+                                {p.colourCd}
+                              </span>
+                            )}
+                            {p.loaded && p.wagonNo && (
+                              <span style={{ fontSize: 10, color: 'var(--green-700)', fontFamily: 'var(--font-mono)', fontWeight: 600, flexShrink: 0 }}>
+                                {p.wagonNo}
+                              </span>
+                            )}
+                            {p.loaded && <span style={{ fontSize: 10, color: 'var(--green-700)', fontWeight: 700, flexShrink: 0 }}>✓</span>}
+                            <button
+                              className="btn btn-ghost btn-icon"
+                              style={{ padding: '3px 5px', flexShrink: 0 }}
+                              onClick={e => { e.stopPropagation(); handlePlateDetail(p) }}
+                              title="Details"
+                            >
+                              <InfoIcon size={13} />
+                            </button>
                           </div>
-                          <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 1 }}>
-                            <span className="plate-grade" style={{ marginRight: 6 }}>{p.grade}</span>
-                            {p.ordSize && <span style={{ color: 'var(--text-muted)' }}>{p.ordSize}</span>}
-                            {p.pcWgt && <span style={{ color: 'var(--text-muted)', marginLeft: 6 }}>{p.pcWgt}T</span>}
-                          </div>
-                          {p.tdc && <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 1 }}>TDC: {p.tdc}</div>}
-                        </div>
-                        {p.colourCd && (
-                          <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 'var(--r-full)', background: 'var(--gray-100)', color: 'var(--text-secondary)', whiteSpace: 'nowrap', fontWeight: 500 }}>
-                            {p.colourCd}
-                          </span>
-                        )}
-                        {p.loaded && p.wagonNo && (
-                          <span style={{ fontSize: 10, color: 'var(--green-700)', fontFamily: 'var(--font-mono)', fontWeight: 600, flexShrink: 0 }}>
-                            {p.wagonNo}
-                          </span>
-                        )}
-                        {p.loaded && <span style={{ fontSize: 10, color: 'var(--green-700)', fontWeight: 700, flexShrink: 0 }}>✓</span>}
-                        <button
-                          className="btn btn-ghost btn-icon"
-                          style={{ padding: '3px 5px', flexShrink: 0 }}
-                          onClick={e => { e.stopPropagation(); handlePlateDetail(p) }}
-                          title="Details"
-                        >
-                          <InfoIcon size={13} />
-                        </button>
-                      </div>
-                    ))}
+                        </React.Fragment>
+                      )
+                    }) : null}
 
                     {showNonOk && visibleNonOkPlates.length > 0 && (
                       <>
@@ -1110,47 +1239,73 @@ export default function LoadingOperationsPage() {
                           <div style={{ flex: 1, height: 1, background: 'var(--border-subtle)' }} />
                         </div>
 
-                        {visibleNonOkPlates.map(p => {
+                        {visibleNonOkPlates.map((p, idx) => {
                           const cfg = PLATE_TYPE_CFG[p.plateType] || PLATE_TYPE_CFG.DIV
+                          const currentWagon = p.wagonNo || '(No Wagon)'
+                          const prevWagon = idx > 0 ? (visibleNonOkPlates[idx - 1].wagonNo || '(No Wagon)') : null
+                          const showWagonHeader = currentWagon !== prevWagon
+
                           return (
-                            <div
-                              key={p.plateNo}
-                              className={`plate-item ${p.loaded ? 'loaded' : ''}`}
-                              onClick={() => togglePlate(activeCode, p.plateNo)}
-                              style={{ display: 'flex', alignItems: 'center', gap: 10 }}
-                            >
-                              <div className="plate-check">{p.loaded && <CheckIcon size={11} />}</div>
-                              <span style={{ fontSize: 10, padding: '2px 7px', borderRadius: 'var(--r-full)', background: cfg.bg, color: cfg.color, fontWeight: 700, flexShrink: 0 }}>
-                                {cfg.label}
-                              </span>
-                              <div style={{ flex: 1, minWidth: 0 }}>
-                                <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-                                  <span className="plate-no" style={{ fontSize: 13 }}>
-                                    {p.plateNo}
+                            <React.Fragment key={p.plateNo}>
+                              {showWagonHeader && (
+                                <div style={{
+                                  margin: '10px 0 5px',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: 8,
+                                  paddingLeft: 4,
+                                  borderLeft: `3px solid ${p.wagonNo ? 'var(--navy-400)' : 'var(--border-subtle)'}`
+                                }}>
+                                  <WagonIcon size={13} style={{ color: p.wagonNo ? 'var(--navy-600)' : 'var(--text-muted)' }} />
+                                  <span style={{
+                                    fontSize: 11.5,
+                                    fontFamily: 'var(--font-mono)',
+                                    fontWeight: 700,
+                                    color: p.wagonNo ? 'var(--navy-700)' : 'var(--text-muted)',
+                                    minWidth: 60
+                                  }}>
+                                    {currentWagon}
                                   </span>
-                                  <span style={{ fontSize: 10.5, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>{p.heatNo}</span>
                                 </div>
-                                <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 1 }}>
-                                  <span className="plate-grade" style={{ marginRight: 6 }}>{p.grade}</span>
-                                  {p.ordSize && <span style={{ color: 'var(--text-muted)' }}>{p.ordSize}</span>}
-                                  {p.pcWgt && <span style={{ color: 'var(--text-muted)', marginLeft: 6 }}>{p.pcWgt}T</span>}
-                                </div>
-                              </div>
-                              {p.loaded && p.wagonNo && (
-                                <span style={{ fontSize: 10, color: 'var(--green-700)', fontFamily: 'var(--font-mono)', fontWeight: 600, flexShrink: 0 }}>
-                                  {p.wagonNo}
-                                </span>
                               )}
-                              {p.loaded && <span style={{ fontSize: 10, color: 'var(--green-700)', fontWeight: 700, flexShrink: 0 }}>✓</span>}
-                              <button
-                                className="btn btn-ghost btn-icon"
-                                style={{ padding: '3px 5px', flexShrink: 0 }}
-                                onClick={e => { e.stopPropagation(); handlePlateDetail(p) }}
-                                title="Details"
+                              <div
+                                className={`plate-item ${p.loaded ? 'loaded' : ''}`}
+                                onClick={() => togglePlate(activeCode, p.plateNo)}
+                                style={{ display: 'flex', alignItems: 'center', gap: 10 }}
                               >
-                                <InfoIcon size={13} />
-                              </button>
-                            </div>
+                                <div className="plate-check">{p.loaded && <CheckIcon size={11} />}</div>
+                                <span style={{ fontSize: 10, padding: '2px 7px', borderRadius: 'var(--r-full)', background: cfg.bg, color: cfg.color, fontWeight: 700, flexShrink: 0 }}>
+                                  {cfg.label}
+                                </span>
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                                    <span className="plate-no" style={{ fontSize: 13 }}>
+                                      {p.plateNo}
+                                    </span>
+                                    <span style={{ fontSize: 10.5, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>{p.heatNo}</span>
+                                  </div>
+                                  <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 1 }}>
+                                    <span className="plate-grade" style={{ marginRight: 6 }}>{p.grade}</span>
+                                    {p.ordSize && <span style={{ color: 'var(--text-muted)' }}>{p.ordSize}</span>}
+                                    {p.pcWgt && <span style={{ color: 'var(--text-muted)', marginLeft: 6 }}>{p.pcWgt}T</span>}
+                                  </div>
+                                </div>
+                                {p.loaded && p.wagonNo && (
+                                  <span style={{ fontSize: 10, color: 'var(--green-700)', fontFamily: 'var(--font-mono)', fontWeight: 600, flexShrink: 0 }}>
+                                    {p.wagonNo}
+                                  </span>
+                                )}
+                                {p.loaded && <span style={{ fontSize: 10, color: 'var(--green-700)', fontWeight: 700, flexShrink: 0 }}>✓</span>}
+                                <button
+                                  className="btn btn-ghost btn-icon"
+                                  style={{ padding: '3px 5px', flexShrink: 0 }}
+                                  onClick={e => { e.stopPropagation(); handlePlateDetail(p) }}
+                                  title="Details"
+                                >
+                                  <InfoIcon size={13} />
+                                </button>
+                              </div>
+                            </React.Fragment>
                           )
                         })}
                       </>
@@ -1283,6 +1438,40 @@ export default function LoadingOperationsPage() {
               <span className="badge badge-success" style={{ marginLeft: 'auto' }}><span className="badge-dot" />Completed</span>
             </div>
             <div className="card-body">
+              {submission.status !== 'idle' && (
+                <div style={{ marginBottom: 16 }}>
+                  {submission.status === 'submitting' && (
+                    <div className="alert alert-info" style={{ alignItems: 'center', gap: 10 }}>
+                      <span className="spinner spinner-sm" />
+                      <span>Submitting wagon records… {submission.succeeded + submission.failed} / {submission.total}</span>
+                    </div>
+                  )}
+                  {submission.status === 'done' && (
+                    <div className="alert alert-success">
+                      <CheckCircleIcon size={15} />
+                      <span>All {submission.succeeded} wagon record{submission.succeeded !== 1 ? 's' : ''} submitted successfully.</span>
+                    </div>
+                  )}
+                  {submission.status === 'partial' && (
+                    <div className="alert alert-danger" style={{ flexDirection: 'column', gap: 8, alignItems: 'flex-start' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <WarnIcon size={15} />
+                        <span>
+                          <strong>{submission.failed} of {submission.total}</strong> wagon submission{submission.failed !== 1 ? 's' : ''} failed.
+                          {' '}{submission.succeeded} succeeded.
+                        </span>
+                      </div>
+                      <button
+                        className="btn btn-danger btn-sm"
+                        onClick={handleRetrySubmission}
+                        disabled={submission.status === 'submitting'}
+                      >
+                        Retry Failed ({submission.failed})
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
               <div className="stat-grid" style={{ marginBottom: 20 }}>
                 <div className="stat-tile"><div className="stat-label">Total Weight (T)</div><div className="stat-value">{completedLoadedWeight.toFixed(2)}</div></div>
                 <div className="stat-tile"><div className="stat-label">Plates Loaded</div><div className="stat-value" style={{ color: 'var(--green-700)' }}>{completedLoaded}</div></div>
@@ -1328,36 +1517,27 @@ export default function LoadingOperationsPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {completedConsignees.filter(c => c.plates.some(p => p.loaded)).map(c => {
-                    const loadedCount = c.plates.filter(p => p.loaded).length
-                    const weightLoaded = c.plates.filter(p => p.loaded && p.pcWgt).reduce((sum, p) => sum + (parseFloat(p.pcWgt) || 0), 0)
-                    return (
-                      <tr key={c.consigneeCode}>
-                        <td>
-                          {(() => {
-                            const ws = [...new Set(c.plates.filter(p => p.loaded && p.wagonNo).map(p => p.wagonNo))]
-                            return ws.length > 0
-                              ? ws.map(w => <div key={w} className="td-mono" style={{ fontSize: 12 }}>{w}</div>)
-                              : <span style={{ color: 'var(--text-muted)' }}>—</span>
-                          })()}
-                        </td>
-                        <td>
-                          <div style={{ fontWeight: 500 }}>{c.consigneeName}</div>
-                          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{c.consigneeCode}</div>
-                        </td>
-                        <td>
-                          {c._destination ? (
-                            <div>
-                              <div style={{ fontWeight: 500 }}>{c._destination.name}</div>
-                              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{c._destination.code}</div>
-                            </div>
-                          ) : <span style={{ color: 'var(--text-muted)' }}>—</span>}
-                        </td>
-                        <td className="td-mono" style={{ color: 'var(--green-700)', fontWeight: 600 }}>{loadedCount}</td>
-                        <td className="td-mono" style={{ fontWeight: 600 }}>{weightLoaded > 0 ? `${weightLoaded.toFixed(1)}T` : <span style={{ color: 'var(--text-muted)' }}>—</span>}</td>
-                      </tr>
-                    )
-                  })}
+                  {wagonSummary.map(w => (
+                    <tr key={w.wagonNo}>
+                      <td>
+                        <div className="td-mono" style={{ fontWeight: 600, fontSize: 12 }}>{w.wagonNo}</div>
+                      </td>
+                      <td>
+                        <div style={{ fontWeight: 500 }}>{w.consigneeName}</div>
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{w.consigneeCode}</div>
+                      </td>
+                      <td>
+                        {w.destination ? (
+                          <div>
+                            <div style={{ fontWeight: 500 }}>{w.destination.name}</div>
+                            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{w.destination.code}</div>
+                          </div>
+                        ) : <span style={{ color: 'var(--text-muted)' }}>—</span>}
+                      </td>
+                      <td className="td-mono" style={{ color: 'var(--green-700)', fontWeight: 600 }}>{w.platesCount}</td>
+                      <td className="td-mono" style={{ fontWeight: 600 }}>{w.totalWeight > 0 ? `${w.totalWeight.toFixed(1)}T` : <span style={{ color: 'var(--text-muted)' }}>—</span>}</td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
