@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import AppShell from '../components/layout/AppShell.jsx'
-import { fetchRakeInfo } from '../api/index.js'
+import { fetchRakeInfo, fetchLoadedDetails } from '../api/index.js'
 import { useToast } from '../context/ToastContext.jsx'
 
 const WAGONS_KEY = 'bsp_wagons_session'
@@ -13,6 +13,7 @@ export default function AssignWagonsPage() {
 
   const state    = location.state || {}
   const initialRakeId = state.prefillRakeId ? String(state.prefillRakeId).toUpperCase() : ''
+  const isModification = state.isModification || false
 
   const [rakeId, setRakeId] = useState(initialRakeId)
   const [rakeInfo, setRakeInfo] = useState(
@@ -47,6 +48,24 @@ export default function AssignWagonsPage() {
       )
     } catch {}
   }, [wagons])
+
+  useEffect(() => {
+    if (!isModification || !initialRakeId) return
+    fetchLoadedDetails(initialRakeId)
+      .then(raw => {
+        if (!Array.isArray(raw)) return
+        const wagonNos = [...new Set(raw.map(r => (r.DISPATCH_NM || '').trim()).filter(Boolean))]
+        setWagons(prev => {
+          const existingSet = new Set(prev)
+          const merged = [...prev]
+          for (const wNo of wagonNos) {
+            if (!existingSet.has(wNo)) merged.push(wNo)
+          }
+          return merged
+        })
+      })
+      .catch(() => {})
+  }, [isModification, initialRakeId])
 
   async function ensureRakeInfo(rakeIdToLoad) {
     const id = String(rakeIdToLoad || '').trim().toUpperCase()
@@ -116,13 +135,14 @@ export default function AssignWagonsPage() {
     const info = await ensureRakeInfo(id)
     if (!info) return
 
-    navigate('/loading-operations', {
+    navigate(isModification ? '/rake-modification' : '/loading-operations', {
       state: {
         ...state,
         prefillRakeId: id,
         prefillDest: info.destinations?.[0] || null,
         prefillRakeInfo: info,
         prefillWagons: wagons,
+        isModification,
       },
     })
   }

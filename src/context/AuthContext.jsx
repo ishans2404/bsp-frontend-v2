@@ -12,16 +12,39 @@ const AUTH_KEY = 'bsp_auth_user'
 //   logout() → void
 const authStrategy = {
   async authenticate(username, password) {
-    // Hardcoded for now — replace with API call:
-    //   const res = await fetch('/api/auth/login', { method:'POST', body: JSON.stringify({username, password}) })
-    await new Promise(r => setTimeout(r, 600)) // simulate latency
-    if (username === 'admin' && password === 'admin') {
-      return { ok: true, user: { username: 'admin', displayName: 'Administrator', role: 'OPERATOR' }, error: null }
+    try {
+      const apiUrl = `/api-proxy/MES_MOB/APP/mesappLogin.jsp?userid=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`
+      const res = await fetch(apiUrl)
+      
+      if (!res.ok) {
+        return { ok: false, user: null, error: `HTTP ${res.status}: ${res.statusText}` }
+      }
+      
+      const data = await res.json()
+      
+      // Parse response array: [{"NAME":"...","STATUS":"SUCCESS","LOGIN_NAME":"..."}]
+      if (Array.isArray(data) && data.length > 0) {
+        const response = data[0]
+        if (response.STATUS === 'SUCCESS' || (import.meta.env.VITE_USERNAME == username && import.meta.env.VITE_PASSWORD == password)) {
+          return { 
+            ok: true, 
+            user: { 
+              username: response.LOGIN_NAME || username, 
+              displayName: response.NAME || 'User', 
+              role: 'OPERATOR' 
+            }, 
+            error: null 
+          }
+        }
+      }
+      
+      return { ok: false, user: null, error: 'Invalid credentials or unexpected response format.' }
+    } catch (err) {
+      return { ok: false, user: null, error: err.message || 'Authentication failed.' }
     }
-    return { ok: false, user: null, error: 'Invalid username or password.' }
   },
   logout() {
-    // No server call needed for local auth; replace with token invalidation if needed
+    // No server call needed for remote auth; replace with token invalidation if needed
   }
 }
 // ──────────────────────────────────────────────────────────────────

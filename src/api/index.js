@@ -153,8 +153,8 @@ function inferTypeFromContext(contextBefore, fieldDefault) {
 /**
  * Parse all plate numbers from one field string.
  * Supported patterns:
- * 1) OK format: B413518#OK-3514900,902,903
- * 2) Non-OK format: B412712-3513103,104,106
+ * 1) OK format: B413518#OK-3514900,902,903 or B412382#OK-3503775/1, 775/2, 779/1
+ * 2) Non-OK format: B412712-3513103,104,106 or B414939-3528550/1,550/2,551/1
  */
 function parseFieldPlates(fieldStr, fieldName) {
   if (!fieldStr || typeof fieldStr !== 'string') return []
@@ -169,44 +169,62 @@ function parseFieldPlates(fieldStr, fieldName) {
     DIV: 'DIV',
   }
   const fieldDefault = FIELD_DEFAULTS[fieldName] || 'OK'
-
   const out = []
 
-  const okRe = /([A-Z]\d+)#OK-([\d,\s]+)/g
-  let m
-  while ((m = okRe.exec(str)) !== null) {
-    const heatNo = m[1]
-    const parts = m[2]
-      .split(',')
-      .map(s => s.trim())
-      .filter(s => /^\d+$/.test(s))
-    if (!parts.length) continue
+  /**
+   * Expand abbreviated plate list → full plate numbers with /N suffixes preserved.
+   * e.g. parts = ["3503775/1", "775/2", "779/1"]
+   *   → ["3503775/1", "3503775/2", "3503779/1"]
+   *
+   * prefix = everything except last 3 digits of the first full base number.
+   */
+  function expandPlates(parts) {
+    if (!parts.length) return []
+    const firstBase = parts[0].split('/')[0]            // e.g. "3503775"
+    const prefix    = firstBase.slice(0, firstBase.length - 3) // e.g. "3503"
 
-    const first = parts[0]
-    parts.forEach((num, idx) => {
-      const plateNum = idx === 0 ? num : first.slice(0, first.length - num.length) + num
-      out.push({ plateNo: `${plateNum}`, heatNo, plateType: 'OK' })
+    return parts.map((part, idx) => {
+      if (idx === 0) return part   // already the full plate number
+      const slashIdx = part.indexOf('/')
+      const digits   = slashIdx >= 0 ? part.slice(0, slashIdx) : part
+      const suffix   = slashIdx >= 0 ? part.slice(slashIdx)    : ''
+      return prefix + digits + suffix
     })
   }
 
-  const nonOkRe = /([A-Z]\d{5,6})-(\d{7,}(?:\s*,\s*\d+)*)/g
+  // ── OK plates ──────────────────────────────────────────────────
+  // e.g. B412382#OK-3503775/1, 775/2, 779/1, 780/2
+  const okRe = /([A-Z]\d+)#OK-([\d/,\s]+)/g
+  let m
+  while ((m = okRe.exec(str)) !== null) {
+    const heatNo = m[1]
+    const parts  = m[2].split(',').map(s => s.trim()).filter(s => /^\d/.test(s))
+    if (!parts.length) continue
+    // First token must be a full plate number (≥ 7 base digits)
+    if (parts[0].split('/')[0].length < 7) continue
+
+    expandPlates(parts).forEach(plateNo =>
+      out.push({ plateNo, heatNo, plateType: 'OK' })
+    )
+  }
+
+  // ── Non-OK plates (RA / TPI / MTI / DIV) ──────────────────────
+  // e.g. B414939-3528550/1,550/2,551/1,551/2,...
+  const nonOkRe = /([A-Z]\d{5,6})-(\d[\d/,\s]*)/g
   while ((m = nonOkRe.exec(str)) !== null) {
+    // Skip anything that is part of an #OK- sequence
     if (m.index > 0 && str[m.index - 1] === '#') continue
 
     const heatNo = m[1]
-    const parts = m[2]
-      .split(',')
-      .map(s => s.trim())
-      .filter(s => /^\d+$/.test(s))
+    const parts  = m[2].split(',').map(s => s.trim()).filter(s => /^\d/.test(s))
     if (!parts.length) continue
+    // First token must be a full plate number (≥ 7 base digits before any slash)
+    if (parts[0].split('/')[0].length < 7) continue
 
-    const first = parts[0]
     const type = inferTypeFromContext(str.substring(0, m.index), fieldDefault)
-
-    parts.forEach((num, idx) => {
-      const plateNum = idx === 0 ? num : first.slice(0, first.length - num.length) + num
-      out.push({ plateNo: plateNum, heatNo, plateType: type })
-    })
+    expandPlates(parts).forEach(plateNo =>
+      out.push({ plateNo, heatNo, plateType: type })
+    )
   }
 
   return out
@@ -353,9 +371,10 @@ export function normalizeLoadingData(raw, _destCode) {
 // ══════════════════════════════════════════════════════════════════
 export async function fetchPlateInfo(plateNo) {
   try {
-    // Strip any existing /N suffix before appending /1
-    const base = String(plateNo).replace(/\/\d+$/, '')
-    const res = await fetch(`${PROXY}/plateInfo.jsp?plateNo=${encodeURIComponent(base)}/1`)
+    const pStr = String(plateNo)
+    // Preserve existing /N suffix; default to /1 if absent
+    const fullPlateNo = /\/\d+$/.test(pStr) ? pStr : `${pStr}/1`
+    const res = await fetch(`${PROXY}/plateInfo.jsp?plateNo=${encodeURIComponent(fullPlateNo)}`)
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const data = await res.json()
     return data?.[0] || null
@@ -505,6 +524,20 @@ export async function submitWagonLoad(payload) {
 
   } catch (err) {
     console.error('submitWagonLoad failed:', err.message)
+    throw err
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  LOADED DETAILS (rake modification)
+// ══════════════════════════════════════════════════════════════════
+export async function fetchLoadedDetails(rakeId) {
+  try {
+    const res = await fetch(`${PROXY}/getLoadedDet.jsp?rakeid=${encodeURIComponent(rakeId)}`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return await res.json()
+  } catch (err) {
+    console.error('fetchLoadedDetails failed:', err.message)
     throw err
   }
 }
