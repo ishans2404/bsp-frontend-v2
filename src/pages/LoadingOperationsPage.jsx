@@ -313,11 +313,17 @@ export default function LoadingOperationsPage() {
     }
 
     if (!wagon.consigneeCode) {
+      // Wagon is unassigned - ask for confirmation
+      const consName = session.consignees.find(c => c.consigneeCode === activeCode)?.consigneeName
+      const msg = `Assign wagon ${wagonNo} to ${consName}?`
+      if (!window.confirm(msg)) {
+        return
+      }
+
       setWagons(prev => prev.map(w =>
         w.wagonNo === wagonNo ? { ...w, consigneeCode: activeCode } : w
       ))
-      const consName = session.consignees.find(c => c.consigneeCode === activeCode)?.consigneeName
-      toast.success({ title: 'Wagon Assigned', message: `${wagonNo} -> ${consName}`, duration: 2000 })
+      toast.success({ title: 'Wagon Assigned', message: `${wagonNo} → ${consName}`, duration: 2000 })
     }
 
     setActiveWagon(wagonNo)
@@ -628,7 +634,9 @@ export default function LoadingOperationsPage() {
   const okPlates = allActivePlates.filter(p => p.plateType === 'OK')
   const nonOkPlates = allActivePlates.filter(p => p.plateType !== 'OK')
 
-  const visibleOkPlates = okPlates
+  // Combine all plates and sort: loaded first (all types), then unloaded (all types)
+  // Within each group, sort by wagon number
+  const visibleAllPlates = (showNonOk ? [...okPlates, ...nonOkPlates] : okPlates)
     .filter(p => {
       if (!plateFilter) return true
       const q = plateFilter.toLowerCase()
@@ -639,38 +647,20 @@ export default function LoadingOperationsPage() {
       )
     })
     .sort((a, b) => {
-      if (a.loaded === b.loaded) {
-        // Group by wagon number
-        const wagonA = a.wagonNo || ''
-        const wagonB = b.wagonNo || ''
-        if (wagonA !== wagonB) return wagonA.localeCompare(wagonB)
-        return 0
-      }
-      return a.loaded ? -1 : 1   // loaded plates float to top
-    })
-
-  const visibleNonOkPlates = showNonOk
-    ? nonOkPlates
-      .filter(p => {
-        if (!plateFilter) return true
-        const q = plateFilter.toLowerCase()
-        return (
-          p.plateNo.toLowerCase().includes(q) ||
-          p.grade.toLowerCase().includes(q) ||
-          (p.heatNo || '').toLowerCase().includes(q)
-        )
-      })
-      .sort((a, b) => {
-        if (a.loaded === b.loaded) {
-          // Group by wagon number
-          const wagonA = a.wagonNo || ''
-          const wagonB = b.wagonNo || ''
-          if (wagonA !== wagonB) return wagonA.localeCompare(wagonB)
-          return 0
-        }
+      // Primary sort: loaded status (loaded first)
+      if (a.loaded !== b.loaded) {
         return a.loaded ? -1 : 1
-      })
-    : []
+      }
+      // Secondary sort: wagon number (for grouping)
+      const wagonA = a.wagonNo || ''
+      const wagonB = b.wagonNo || ''
+      if (wagonA !== wagonB) return wagonA.localeCompare(wagonB)
+      // Tertiary sort: plate type (OK first)
+      if (a.plateType !== b.plateType) {
+        return a.plateType === 'OK' ? -1 : 1
+      }
+      return 0
+    })
 
   const loadedPlates = session?.consignees.reduce((s, c) => s + c.plates.filter(p => p.loaded).length, 0) ?? 0
 
@@ -1194,23 +1184,24 @@ export default function LoadingOperationsPage() {
                   </div>
 
                   <div className="plate-list" style={{ flex: 1, padding: '8px 14px', overflowY: 'auto' }}>
-                    {okPlates.length === 0 && (
+                    {allActivePlates.length === 0 && (
                       <div className="empty-state" style={{ padding: '20px 0' }}>
                         <div className="empty-state-icon"><PlateIcon size={20} /></div>
-                        <div className="empty-state-title">No OK plates</div>
+                        <div className="empty-state-title">No plates</div>
                         <div className="empty-state-text">Plates appear here once heat/BFD allocation is complete.</div>
                       </div>
                     )}
 
-                    {okPlates.length > 0 && visibleOkPlates.length === 0 && (
+                    {allActivePlates.length > 0 && visibleAllPlates.length === 0 && (
                       <div className="empty-state" style={{ padding: '12px 0' }}>
-                        <div className="empty-state-text">No OK plates match the filter.</div>
+                        <div className="empty-state-text">No plates match the filter.</div>
                       </div>
                     )}
 
-                    {visibleOkPlates.length > 0 ? visibleOkPlates.map((p, idx) => {
+                    {visibleAllPlates.length > 0 && visibleAllPlates.map((p, idx) => {
+                      const cfg = p.plateType === 'OK' ? null : (PLATE_TYPE_CFG[p.plateType] || PLATE_TYPE_CFG.DIV)
                       const currentWagon = p.wagonNo || '(No Wagon)'
-                      const prevWagon = idx > 0 ? (visibleOkPlates[idx - 1].wagonNo || '(No Wagon)') : null
+                      const prevWagon = idx > 0 ? (visibleAllPlates[idx - 1].wagonNo || '(No Wagon)') : null
                       const showWagonHeader = currentWagon !== prevWagon
                       const orderForPlate = activeConsignee?.orders?.find(o => o.ordNo === p.ordNo)
                       const balValue = orderForPlate?.bal ?? null
@@ -1244,6 +1235,11 @@ export default function LoadingOperationsPage() {
                             style={{ display: 'flex', alignItems: 'center', gap: 6 }}
                           >
                             <div className="plate-check">{p.loaded && <CheckIcon size={11} />}</div>
+                            {cfg && (
+                              <span style={{ fontSize: 9, padding: '1px 5px', borderRadius: 'var(--r-full)', background: cfg.bg, color: cfg.color, fontWeight: 700, flexShrink: 0 }}>
+                                {cfg.label}
+                              </span>
+                            )}
                             <div style={{ flex: 1, minWidth: 0 }}>
                               <div style={{ display: 'flex', alignItems: 'baseline', gap: 2, marginBottom: 2 }}>
                                 <span className="plate-no" style={{ fontSize: 12.5, fontWeight: 600 }}>{p.plateNo}</span>
@@ -1278,92 +1274,7 @@ export default function LoadingOperationsPage() {
                           </div>
                         </React.Fragment>
                       )
-                    }) : null}
-
-                    {showNonOk && visibleNonOkPlates.length > 0 && (
-                      <>
-                        <div style={{ margin: '10px 0 5px', display: 'flex', alignItems: 'center', gap: 8 }}>
-                          <div style={{ flex: 1, height: 1, background: 'var(--border-subtle)' }} />
-                          <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 600, whiteSpace: 'nowrap' }}>
-                            Other Plate Types
-                          </span>
-                          <div style={{ flex: 1, height: 1, background: 'var(--border-subtle)' }} />
-                        </div>
-
-                        {visibleNonOkPlates.map((p, idx) => {
-                          const cfg = PLATE_TYPE_CFG[p.plateType] || PLATE_TYPE_CFG.DIV
-                          const currentWagon = p.wagonNo || '(No Wagon)'
-                          const prevWagon = idx > 0 ? (visibleNonOkPlates[idx - 1].wagonNo || '(No Wagon)') : null
-                          const showWagonHeader = currentWagon !== prevWagon
-                          const orderForPlate = activeConsignee?.orders?.find(o => o.ordNo === p.ordNo)
-                          const balValue = orderForPlate?.bal ?? null
-
-                          return (
-                            <React.Fragment key={p.plateNo}>
-                              {showWagonHeader && (
-                                <div style={{
-                                  margin: '10px 0 5px',
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  gap: 8,
-                                  paddingLeft: 4,
-                                  borderLeft: `3px solid ${p.wagonNo ? 'var(--navy-400)' : 'var(--border-subtle)'}`
-                                }}>
-                                  <WagonIcon size={13} style={{ color: p.wagonNo ? 'var(--navy-600)' : 'var(--text-muted)' }} />
-                                  <span style={{
-                                    fontSize: 11.5,
-                                    fontFamily: 'var(--font-mono)',
-                                    fontWeight: 700,
-                                    color: p.wagonNo ? 'var(--navy-700)' : 'var(--text-muted)',
-                                    minWidth: 60
-                                  }}>
-                                    {currentWagon}
-                                  </span>
-                                </div>
-                              )}
-                              <div
-                                className={`plate-item ${p.loaded ? 'loaded' : ''}`}
-                                onClick={() => togglePlate(activeCode, p.plateNo)}
-                                style={{ display: 'flex', alignItems: 'center', gap: 6 }}
-                              >
-                                <div className="plate-check">{p.loaded && <CheckIcon size={11} />}</div>
-                                <span style={{ fontSize: 9, padding: '1px 5px', borderRadius: 'var(--r-full)', background: cfg.bg, color: cfg.color, fontWeight: 700, flexShrink: 0 }}>
-                                  {cfg.label}
-                                </span>
-                                <div style={{ flex: 1, minWidth: 0 }}>
-                                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 2, marginBottom: 2 }}>
-                                    <span className="plate-no" style={{ fontSize: 12.5, fontWeight: 600 }}>
-                                      {p.plateNo}
-                                    </span>
-                                  </div>
-                                  <div style={{ fontSize: 10.5, color: 'var(--text-secondary)', display: 'flex', gap: 5, alignItems: 'center' }}>
-                                    <span className="plate-grade" style={{ fontWeight: 700, color: 'var(--navy-700)' }}>{p.grade}</span>
-                                    {p.ordSize && <span style={{ color: 'var(--text-secondary)', fontWeight: 600 }}>{p.ordSize}</span>}
-                                    {p.tdc && <span style={{ fontWeight: 700, color: 'var(--navy-700)' }}>{p.tdc}</span>}
-                                    {p.pcWgt && <span style={{ color: 'var(--text-secondary)', fontWeight: 600 }}>{p.pcWgt}T</span>}
-                                    {balValue !== null && <span style={{ color: 'var(--text-secondary)', fontWeight: 600, marginLeft: 2 }}>BAL: {balValue}</span>}
-                                  </div>
-                                </div>
-                                {p.loaded && p.wagonNo && (
-                                  <span style={{ fontSize: 9, color: 'var(--green-700)', fontFamily: 'var(--font-mono)', fontWeight: 600, flexShrink: 0 }}>
-                                    {p.wagonNo}
-                                  </span>
-                                )}
-                                {p.loaded && <span style={{ fontSize: 10, color: 'var(--green-700)', fontWeight: 700, flexShrink: 0 }}>✓</span>}
-                                <button
-                                  className="btn btn-ghost btn-icon"
-                                  style={{ padding: '2px 3px', flexShrink: 0 }}
-                                  onClick={e => { e.stopPropagation(); handlePlateDetail(p) }}
-                                  title="Details"
-                                >
-                                  <InfoIcon size={12} />
-                                </button>
-                              </div>
-                            </React.Fragment>
-                          )
-                        })}
-                      </>
-                    )}
+                    })}
                   </div>
 
                   {allActivePlates.length > 0 && (
