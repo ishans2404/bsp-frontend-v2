@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bsp-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+    # For development, uncomment below and comment out the CMD in Dockerfile for hot reload:
+    # volumes:
+    #   - .:/app
+    #   - /app/node_modules
+    # command: npm run dev
+    # ports:
+    #   - "5173:5173"  # Vite dev server port
+    restart: unless-stopped

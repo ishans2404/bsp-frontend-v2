@@ -15,6 +15,7 @@ const NAV_ITEMS = [
       { path: '/rake-generation',    label: 'Rake Generation',    icon: IconRake },
       { path: '/assign-wagons',      label: 'Assign Wagons',      icon: IconWagon },
       { path: '/loading-operations', label: 'Loading Operations', icon: IconLoad },
+      { path: '/rake-modification',  label: 'Rake Modification',  icon: IconEdit },
       { path: '/loading-report',  label: 'Loading Report',  icon: IconTable },
     ]
   }
@@ -187,6 +188,14 @@ function IconTable({ size = 16 }) {
       <line x1="3" y1="9" x2="21" y2="9"/>
       <line x1="3" y1="15" x2="21" y2="15"/>
       <line x1="9" y1="9" x2="9" y2="21"/>
+    </svg>
+  )
+}
+function IconEdit({ size = 16 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/>
+      <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
     </svg>
   )
 }

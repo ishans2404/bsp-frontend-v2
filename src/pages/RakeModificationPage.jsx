@@ -679,6 +679,10 @@ export default function RakeModificationPage() {
                           const isForActive  = w.consigneeCode === activeCode
                           const canSelect    = !w.consigneeCode || w.consigneeCode === activeCode
                           const platesLoaded = (session?.consignees ?? []).flatMap(c => c.plates).filter(p => p.wagonNo === w.wagonNo && p.loaded).length
+                          const wagonWeight = (session?.consignees ?? [])
+                            .flatMap(c => c.plates)
+                            .filter(p => p.wagonNo === w.wagonNo && p.loaded && p.pcWgt)
+                            .reduce((sum, p) => sum + (parseFloat(p.pcWgt) || 0), 0)
                           return (
                             <div key={w.wagonNo} style={{ display:'flex', gap:4, alignItems:'stretch', borderRadius:'var(--r-md)', overflow:'hidden' }}>
                               <div onClick={() => canSelect ? handleSelectWagon(w.wagonNo) : toast.error(`Wagon ${w.wagonNo} is assigned to ${assignedCons?.consigneeName || w.consigneeCode}`)}
@@ -689,6 +693,7 @@ export default function RakeModificationPage() {
                                 <div style={{ display:'flex', alignItems:'baseline', gap:6 }}>
                                   <span style={{ fontFamily:'var(--font-mono)', fontWeight:700, fontSize:11.5, color: isActive ? 'var(--navy-700)' : 'var(--text-primary)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', flex:1 }}>{w.wagonNo}</span>
                                   {platesLoaded > 0 && <span style={{ fontSize:9.5, color:'var(--green-700)', fontWeight:700 }}>{platesLoaded}p</span>}
+                                  {wagonWeight > 0 && <span style={{ fontSize:9.5, color:'var(--green-700)', fontWeight:700 }}>/ {wagonWeight.toFixed(1)}T</span>}
                                 </div>
                                 <div style={{ fontSize:10, color: isForActive ? 'var(--navy-600)' : 'var(--text-muted)', fontWeight: isForActive ? 600 : 400, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
                                   {assignedCons ? assignedCons.consigneeName : <span style={{ fontStyle:'italic' }}>Unassigned</span>}
