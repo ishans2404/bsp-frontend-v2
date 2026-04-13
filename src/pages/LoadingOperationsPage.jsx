@@ -608,12 +608,21 @@ export default function LoadingOperationsPage() {
     return c.consigneeName.toLowerCase().includes(q) || c.consigneeCode.toLowerCase().includes(q)
   })
 
-  const filteredWagons = wagons.filter(w => {
-    if (!wagonSearch) return true
-    const q = wagonSearch.toLowerCase()
-    return w.wagonNo.toLowerCase().includes(q) ||
-      (w.consigneeCode || '').toLowerCase().includes(q)
-  })
+  const filteredWagons = wagons
+    .filter(w => {
+      if (!wagonSearch) return true
+      const q = wagonSearch.toLowerCase()
+      return w.wagonNo.toLowerCase().includes(q) ||
+        (w.consigneeCode || '').toLowerCase().includes(q)
+    })
+    .sort((a, b) => {
+      // Prioritize wagons assigned to the currently selected consignee
+      const aIsActive = a.consigneeCode === activeCode
+      const bIsActive = b.consigneeCode === activeCode
+      if (aIsActive && !bIsActive) return -1
+      if (!aIsActive && bIsActive) return 1
+      return 0
+    })
 
   const allActivePlates = activeConsignee?.plates ?? []
   const okPlates = allActivePlates.filter(p => p.plateType === 'OK')
@@ -852,6 +861,13 @@ export default function LoadingOperationsPage() {
               </div>
             )}
             <div style={{ display: 'flex', gap: 8 }}>
+              <button 
+                className="btn btn-ghost btn-sm" 
+                onClick={() => window.history.back()}
+                title="Go back to Assign Wagons"
+              >
+                <BackIcon /> Back
+              </button>
               <button className="btn btn-secondary btn-sm" onClick={handleExportJson} disabled={exporting}>
                 <JsonIcon /> JSON
               </button>
@@ -1196,6 +1212,8 @@ export default function LoadingOperationsPage() {
                       const currentWagon = p.wagonNo || '(No Wagon)'
                       const prevWagon = idx > 0 ? (visibleOkPlates[idx - 1].wagonNo || '(No Wagon)') : null
                       const showWagonHeader = currentWagon !== prevWagon
+                      const orderForPlate = activeConsignee?.orders?.find(o => o.ordNo === p.ordNo)
+                      const balValue = orderForPlate?.bal ?? null
 
                       return (
                         <React.Fragment key={p.plateNo}>
@@ -1223,39 +1241,39 @@ export default function LoadingOperationsPage() {
                           <div
                             className={`plate-item ${p.loaded ? 'loaded' : ''}`}
                             onClick={() => togglePlate(activeCode, p.plateNo)}
-                            style={{ display: 'flex', alignItems: 'center', gap: 10 }}
+                            style={{ display: 'flex', alignItems: 'center', gap: 6 }}
                           >
                             <div className="plate-check">{p.loaded && <CheckIcon size={11} />}</div>
                             <div style={{ flex: 1, minWidth: 0 }}>
-                              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-                                <span className="plate-no" style={{ fontSize: 13 }}>{p.plateNo}</span>
-                                <span style={{ fontSize: 10.5, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>{p.heatNo}</span>
+                              <div style={{ display: 'flex', alignItems: 'baseline', gap: 2, marginBottom: 2 }}>
+                                <span className="plate-no" style={{ fontSize: 12.5, fontWeight: 600 }}>{p.plateNo}</span>
                               </div>
-                              <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 1 }}>
-                                <span className="plate-grade" style={{ marginRight: 6 }}>{p.grade}</span>
-                                {p.ordSize && <span style={{ color: 'var(--text-muted)' }}>{p.ordSize}</span>}
-                                {p.pcWgt && <span style={{ color: 'var(--text-muted)', marginLeft: 6 }}>{p.pcWgt}T</span>}
+                              <div style={{ fontSize: 10.5, color: 'var(--text-secondary)', display: 'flex', gap: 5, alignItems: 'center', flexWrap: 'wrap' }}>
+                                <span className="plate-grade" style={{ fontWeight: 700, color: 'var(--navy-700)' }}>{p.grade}</span>
+                                {p.ordSize && <span style={{ color: 'var(--text-secondary)', fontWeight: 600 }}>{p.ordSize}</span>}
+                                {p.tdc && <span style={{ fontWeight: 700, color: 'var(--navy-700)' }}>{p.tdc}</span>}
+                                {p.pcWgt && <span style={{ color: 'var(--text-secondary)', fontWeight: 600 }}>{p.pcWgt}T </span>}
+                                {balValue !== null && <span style={{ color: 'var(--text-secondary)', fontWeight: 600, marginLeft: 2 }}>BAL: {balValue}</span>}
                               </div>
-                              {p.tdc && <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 1 }}>TDC: {p.tdc}</div>}
                             </div>
                             {p.colourCd && (
-                              <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 'var(--r-full)', background: 'var(--gray-100)', color: 'var(--text-secondary)', whiteSpace: 'nowrap', fontWeight: 500 }}>
+                              <span style={{ fontSize: 9, padding: '1px 5px', borderRadius: 'var(--r-full)', background: 'var(--gray-100)', color: 'var(--text-secondary)', whiteSpace: 'nowrap', fontWeight: 500, flexShrink: 0 }}>
                                 {p.colourCd}
                               </span>
                             )}
                             {p.loaded && p.wagonNo && (
-                              <span style={{ fontSize: 10, color: 'var(--green-700)', fontFamily: 'var(--font-mono)', fontWeight: 600, flexShrink: 0 }}>
+                              <span style={{ fontSize: 9, color: 'var(--green-700)', fontFamily: 'var(--font-mono)', fontWeight: 600, flexShrink: 0 }}>
                                 {p.wagonNo}
                               </span>
                             )}
                             {p.loaded && <span style={{ fontSize: 10, color: 'var(--green-700)', fontWeight: 700, flexShrink: 0 }}>✓</span>}
                             <button
                               className="btn btn-ghost btn-icon"
-                              style={{ padding: '3px 5px', flexShrink: 0 }}
+                              style={{ padding: '2px 3px', flexShrink: 0 }}
                               onClick={e => { e.stopPropagation(); handlePlateDetail(p) }}
                               title="Details"
                             >
-                              <InfoIcon size={13} />
+                              <InfoIcon size={12} />
                             </button>
                           </div>
                         </React.Fragment>
@@ -1277,6 +1295,8 @@ export default function LoadingOperationsPage() {
                           const currentWagon = p.wagonNo || '(No Wagon)'
                           const prevWagon = idx > 0 ? (visibleNonOkPlates[idx - 1].wagonNo || '(No Wagon)') : null
                           const showWagonHeader = currentWagon !== prevWagon
+                          const orderForPlate = activeConsignee?.orders?.find(o => o.ordNo === p.ordNo)
+                          const balValue = orderForPlate?.bal ?? null
 
                           return (
                             <React.Fragment key={p.plateNo}>
@@ -1304,38 +1324,39 @@ export default function LoadingOperationsPage() {
                               <div
                                 className={`plate-item ${p.loaded ? 'loaded' : ''}`}
                                 onClick={() => togglePlate(activeCode, p.plateNo)}
-                                style={{ display: 'flex', alignItems: 'center', gap: 10 }}
+                                style={{ display: 'flex', alignItems: 'center', gap: 6 }}
                               >
                                 <div className="plate-check">{p.loaded && <CheckIcon size={11} />}</div>
-                                <span style={{ fontSize: 10, padding: '2px 7px', borderRadius: 'var(--r-full)', background: cfg.bg, color: cfg.color, fontWeight: 700, flexShrink: 0 }}>
+                                <span style={{ fontSize: 9, padding: '1px 5px', borderRadius: 'var(--r-full)', background: cfg.bg, color: cfg.color, fontWeight: 700, flexShrink: 0 }}>
                                   {cfg.label}
                                 </span>
                                 <div style={{ flex: 1, minWidth: 0 }}>
-                                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-                                    <span className="plate-no" style={{ fontSize: 13 }}>
+                                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 2, marginBottom: 2 }}>
+                                    <span className="plate-no" style={{ fontSize: 12.5, fontWeight: 600 }}>
                                       {p.plateNo}
                                     </span>
-                                    <span style={{ fontSize: 10.5, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>{p.heatNo}</span>
                                   </div>
-                                  <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 1 }}>
-                                    <span className="plate-grade" style={{ marginRight: 6 }}>{p.grade}</span>
-                                    {p.ordSize && <span style={{ color: 'var(--text-muted)' }}>{p.ordSize}</span>}
-                                    {p.pcWgt && <span style={{ color: 'var(--text-muted)', marginLeft: 6 }}>{p.pcWgt}T</span>}
+                                  <div style={{ fontSize: 10.5, color: 'var(--text-secondary)', display: 'flex', gap: 5, alignItems: 'center' }}>
+                                    <span className="plate-grade" style={{ fontWeight: 700, color: 'var(--navy-700)' }}>{p.grade}</span>
+                                    {p.ordSize && <span style={{ color: 'var(--text-secondary)', fontWeight: 600 }}>{p.ordSize}</span>}
+                                    {p.tdc && <span style={{ fontWeight: 700, color: 'var(--navy-700)' }}>{p.tdc}</span>}
+                                    {p.pcWgt && <span style={{ color: 'var(--text-secondary)', fontWeight: 600 }}>{p.pcWgt}T</span>}
+                                    {balValue !== null && <span style={{ color: 'var(--text-secondary)', fontWeight: 600, marginLeft: 2 }}>BAL: {balValue}</span>}
                                   </div>
                                 </div>
                                 {p.loaded && p.wagonNo && (
-                                  <span style={{ fontSize: 10, color: 'var(--green-700)', fontFamily: 'var(--font-mono)', fontWeight: 600, flexShrink: 0 }}>
+                                  <span style={{ fontSize: 9, color: 'var(--green-700)', fontFamily: 'var(--font-mono)', fontWeight: 600, flexShrink: 0 }}>
                                     {p.wagonNo}
                                   </span>
                                 )}
                                 {p.loaded && <span style={{ fontSize: 10, color: 'var(--green-700)', fontWeight: 700, flexShrink: 0 }}>✓</span>}
                                 <button
                                   className="btn btn-ghost btn-icon"
-                                  style={{ padding: '3px 5px', flexShrink: 0 }}
+                                  style={{ padding: '2px 3px', flexShrink: 0 }}
                                   onClick={e => { e.stopPropagation(); handlePlateDetail(p) }}
                                   title="Details"
                                 >
-                                  <InfoIcon size={13} />
+                                  <InfoIcon size={12} />
                                 </button>
                               </div>
                             </React.Fragment>
