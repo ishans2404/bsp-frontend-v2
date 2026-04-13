@@ -15,7 +15,6 @@ const NAV_ITEMS = [
       { path: '/rake-generation',    label: 'Rake Generation',    icon: IconRake },
       { path: '/assign-wagons',      label: 'Assign Wagons',      icon: IconWagon },
       { path: '/loading-operations', label: 'Loading Operations', icon: IconLoad },
-      { path: '/rake-modification',  label: 'Rake Modification',  icon: IconEdit },
       { path: '/loading-report',  label: 'Loading Report',  icon: IconTable },
     ]
   }

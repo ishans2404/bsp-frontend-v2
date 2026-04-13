@@ -8,7 +8,6 @@ import RakeGenerationPage     from './pages/RakeGenerationPage.jsx'
 import LoadingOperationsPage  from './pages/LoadingOperationsPage.jsx'
 import LoadingReportPage   from './pages/LoadingReportPage.jsx'
 import AssignWagonsPage       from './pages/AssignWagonsPage.jsx'
-import RakeModificationPage from './pages/RakeModificationPage.jsx'
 
 function RequireAuth({ children }) {
   const { user, loading } = useAuth()
@@ -36,7 +35,6 @@ export default function App() {
           <Route path="/loading-operations" element={<RequireAuth><LoadingOperationsPage /></RequireAuth>} />
           <Route path="/assign-wagons"      element={<RequireAuth><AssignWagonsPage /></RequireAuth>} />
           <Route path="/loading-report"  element={<RequireAuth><LoadingReportPage /></RequireAuth>} />
-          <Route path="/rake-modification" element={<RequireAuth><RakeModificationPage /></RequireAuth>} />
           <Route path="*" element={<Navigate to="/home" replace />} />
         </Routes>
       </ToastProvider>

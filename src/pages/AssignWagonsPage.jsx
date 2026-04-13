@@ -1,10 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import AppShell from '../components/layout/AppShell.jsx'
-import { fetchRakeInfo, fetchLoadedDetails } from '../api/index.js'
+import { fetchRakeInfo, fetchWagonsByRake, linkWagonToRake } from '../api/index.js'
 import { useToast } from '../context/ToastContext.jsx'
-
-const WAGONS_KEY = 'bsp_wagons_session'
 
 export default function AssignWagonsPage() {
   const navigate  = useNavigate()
@@ -13,7 +11,6 @@ export default function AssignWagonsPage() {
 
   const state    = location.state || {}
   const initialRakeId = state.prefillRakeId ? String(state.prefillRakeId).toUpperCase() : ''
-  const isModification = state.isModification || false
 
   const [rakeId, setRakeId] = useState(initialRakeId)
   const [rakeInfo, setRakeInfo] = useState(
@@ -22,50 +19,26 @@ export default function AssignWagonsPage() {
       : null
   )
   const [rakeLoading, setRakeLoading] = useState(false)
-
-  const [wagons, setWagons] = useState(() => {
-    try {
-      const stored = JSON.parse(localStorage.getItem(WAGONS_KEY) || '[]')
-      // stored format is [{wagonNo, consigneeCode}]; extract just the wagon numbers
-      return stored.map(w => (typeof w === 'string' ? w : w.wagonNo)).filter(Boolean)
-    } catch { return [] }
-  })
+  const [wagons, setWagons] = useState([])
+  const [wagonsLoading, setWagonsLoading] = useState(false)
   const [input, setInput]   = useState('')
   const inputRef = useRef(null)
 
   const destinations = rakeInfo?.destinations || (state.prefillDest ? [state.prefillDest] : [])
 
-  // Persist wagon list to localStorage, preserving existing consignee assignments
+  // Fetch wagons from API whenever rakeInfo is set/changed
   useEffect(() => {
-    try {
-      const existing = JSON.parse(localStorage.getItem(WAGONS_KEY) || '[]')
-      const existingMap = Object.fromEntries(
-        existing.filter(w => w?.wagonNo).map(w => [w.wagonNo, w.consigneeCode])
-      )
-      localStorage.setItem(
-        WAGONS_KEY,
-        JSON.stringify(wagons.map(wNo => ({ wagonNo: wNo, consigneeCode: existingMap[wNo] ?? null })))
-      )
-    } catch {}
-  }, [wagons])
-
-  useEffect(() => {
-    if (!isModification || !initialRakeId) return
-    fetchLoadedDetails(initialRakeId)
+    const id = rakeInfo?.rakeId ? String(rakeInfo.rakeId).trim() : ''
+    if (!id) return
+    setWagonsLoading(true)
+    fetchWagonsByRake(id)
       .then(raw => {
-        if (!Array.isArray(raw)) return
-        const wagonNos = [...new Set(raw.map(r => (r.DISPATCH_NM || '').trim()).filter(Boolean))]
-        setWagons(prev => {
-          const existingSet = new Set(prev)
-          const merged = [...prev]
-          for (const wNo of wagonNos) {
-            if (!existingSet.has(wNo)) merged.push(wNo)
-          }
-          return merged
-        })
+        const wNos = [...new Set(raw.map(r => (r.DISPATCH_NM || '').trim()).filter(Boolean))]
+        setWagons(wNos)
       })
       .catch(() => {})
-  }, [isModification, initialRakeId])
+      .finally(() => setWagonsLoading(false))
+  }, [rakeInfo?.rakeId])
 
   async function ensureRakeInfo(rakeIdToLoad) {
     const id = String(rakeIdToLoad || '').trim().toUpperCase()
@@ -73,9 +46,7 @@ export default function AssignWagonsPage() {
       toast.warning('Please enter a Rake ID.')
       return null
     }
-
     if (rakeInfo && String(rakeInfo.rakeId) === id) return rakeInfo
-
     setRakeLoading(true)
     try {
       const info = await fetchRakeInfo(id)
@@ -92,57 +63,47 @@ export default function AssignWagonsPage() {
 
   async function handleFetchRake() {
     const id = rakeId.trim().toUpperCase()
-    if (!id) {
-      toast.warning('Please enter a Rake ID.')
-      return
-    }
+    if (!id) { toast.warning('Please enter a Rake ID.'); return }
     const info = await ensureRakeInfo(id)
     if (info) toast.success({ title: 'Rake Loaded', message: `Rake ${id} is ready for wagon assignment.` })
   }
 
-  function handleAdd() {
-    if (!rakeId.trim()) {
-      toast.warning('Enter Rake ID first.')
-      return
-    }
+  async function handleAdd() {
+    if (!rakeId.trim()) { toast.warning('Enter Rake ID first.'); return }
     const val = input.trim().toUpperCase()
     if (!val) return
-    if (wagons.includes(val)) {
-      toast.warning(`Wagon "${val}" is already in the list.`)
-      return
+    if (wagons.includes(val)) { toast.warning(`Wagon "${val}" is already in the list.`); return }
+    try {
+      await linkWagonToRake(rakeId.trim(), val, 1)
+      setWagons(prev => [...prev, val])
+      setInput('')
+      inputRef.current?.focus()
+    } catch {
+      toast.error(`Failed to link wagon "${val}" to rake. Please try again.`)
     }
-    setWagons(prev => [...prev, val])
-    setInput('')
-    inputRef.current?.focus()
   }
 
-  function handleRemove(wNo) {
+  async function handleRemove(wNo) {
+    try {
+      await linkWagonToRake(rakeId.trim(), wNo, 0)
+    } catch {
+      // Continue with local removal even if API fails
+    }
     setWagons(prev => prev.filter(w => w !== wNo))
   }
 
   async function handleProceed() {
-    if (wagons.length === 0) {
-      toast.warning('Please add at least one wagon before proceeding.')
-      return
-    }
-
+    if (wagons.length === 0) { toast.warning('Please add at least one wagon before proceeding.'); return }
     const id = rakeId.trim().toUpperCase()
-    if (!id) {
-      toast.warning('Please enter a Rake ID.')
-      return
-    }
-
+    if (!id) { toast.warning('Please enter a Rake ID.'); return }
     const info = await ensureRakeInfo(id)
     if (!info) return
-
-    navigate(isModification ? '/rake-modification' : '/loading-operations', {
+    navigate('/loading-operations', {
       state: {
-        ...state,
         prefillRakeId: id,
         prefillDest: info.destinations?.[0] || null,
         prefillRakeInfo: info,
         prefillWagons: wagons,
-        isModification,
       },
     })
   }
@@ -151,7 +112,6 @@ export default function AssignWagonsPage() {
     <AppShell pageTitle="Assign Wagons">
       <div style={{ maxWidth: 680, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 16 }}>
 
-        {/* Page header */}
         <div className="section-header">
           <div>
             <div className="section-title">Assign Wagons</div>
@@ -163,7 +123,6 @@ export default function AssignWagonsPage() {
           </div>
         </div>
 
-        {/* Rake info */}
         <div className="card">
           <div className="card-header">
             <div className="card-icon"><DestIcon size={14} /></div>
@@ -190,7 +149,6 @@ export default function AssignWagonsPage() {
                 {rakeLoading ? <><span className="spinner spinner-sm" /> Loading...</> : 'Load Rake'}
               </button>
             </div>
-
             {rakeInfo ? (
               <div className="rakeid-display">
                 <div style={{ flex: 1 }}>
@@ -207,33 +165,27 @@ export default function AssignWagonsPage() {
                 </div>
               </div>
             ) : (
-              <div className="form-hint">
-                Load the rake to verify destination details before assigning wagons.
-              </div>
+              <div className="form-hint">Load the rake to verify destination details before assigning wagons.</div>
             )}
           </div>
         </div>
 
-        {/* Add wagons card */}
         <div className="card">
           <div className="card-header">
             <div className="card-icon"><WagonIcon /></div>
             <div>
               <div className="card-title">Wagon Numbers</div>
-              <div className="card-subtitle">
-                Add each wagon in this rake. One wagon belongs to one consignee; a consignee may use multiple wagons.
-              </div>
+              <div className="card-subtitle">Add each wagon in this rake. One wagon belongs to one consignee; a consignee may use multiple wagons.</div>
             </div>
-            <span
-              className="badge badge-navy"
-              style={{ marginLeft: 'auto', fontSize: 12, padding: '4px 10px' }}
-            >
-              {wagons.length} wagon{wagons.length !== 1 ? 's' : ''}
-            </span>
+            {wagonsLoading
+              ? <span className="spinner spinner-sm" style={{ marginLeft: 'auto' }} />
+              : <span className="badge badge-navy" style={{ marginLeft: 'auto', fontSize: 12, padding: '4px 10px' }}>
+                  {wagons.length} wagon{wagons.length !== 1 ? 's' : ''}
+                </span>
+            }
           </div>
 
           <div className="card-body" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-            {/* Input row */}
             <div style={{ display: 'flex', gap: 8 }}>
               <input
                 ref={inputRef}
@@ -246,58 +198,26 @@ export default function AssignWagonsPage() {
                 disabled={!rakeId.trim()}
                 style={{ flex: 1 }}
               />
-              <button
-                className="btn btn-primary"
-                onClick={handleAdd}
-                disabled={!rakeId.trim() || !input.trim()}
-              >
+              <button className="btn btn-primary" onClick={handleAdd} disabled={!rakeId.trim() || !input.trim()}>
                 <PlusIcon /> Add
               </button>
             </div>
 
-            {/* Wagon list */}
-            {wagons.length > 0 ? (
+            {wagonsLoading ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '20px 0' }}>
+                <span className="spinner spinner-sm" />
+                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Loading linked wagons…</span>
+              </div>
+            ) : wagons.length > 0 ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
                 {wagons.map((w, i) => (
-                  <div
-                    key={w}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 10,
-                      padding: '10px 14px',
-                      border: '1px solid var(--border-subtle)',
-                      borderRadius: 'var(--r-md)',
-                      background: 'var(--bg-surface)',
-                    }}
-                  >
-                    <span
-                      style={{
-                        fontSize: 11,
-                        color: 'var(--text-muted)',
-                        fontFamily: 'var(--font-mono)',
-                        minWidth: 22,
-                      }}
-                    >
+                  <div key={w} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', border: '1px solid var(--border-subtle)', borderRadius: 'var(--r-md)', background: 'var(--bg-surface)' }}>
+                    <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', minWidth: 22 }}>
                       {String(i + 1).padStart(2, '0')}
                     </span>
                     <WagonIcon size={15} />
-                    <span
-                      style={{
-                        flex: 1,
-                        fontFamily: 'var(--font-mono)',
-                        fontWeight: 700,
-                        fontSize: 14,
-                        color: 'var(--text-primary)',
-                      }}
-                    >
-                      {w}
-                    </span>
-                    <button
-                      className="btn btn-ghost btn-icon btn-sm"
-                      onClick={() => handleRemove(w)}
-                      title="Remove wagon"
-                    >
+                    <span style={{ flex: 1, fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: 14, color: 'var(--text-primary)' }}>{w}</span>
+                    <button className="btn btn-ghost btn-icon btn-sm" onClick={() => handleRemove(w)} title="Remove wagon">
                       <RemoveIcon />
                     </button>
                   </div>
@@ -307,9 +227,7 @@ export default function AssignWagonsPage() {
               <div className="empty-state" style={{ padding: '24px 0' }}>
                 <div className="empty-state-icon"><WagonIcon size={22} /></div>
                 <div className="empty-state-title">No wagons added yet</div>
-                <div className="empty-state-text">
-                  Type a wagon number above and press Enter or click Add.
-                </div>
+                <div className="empty-state-text">Type a wagon number above and press Enter or click Add.</div>
               </div>
             )}
           </div>
@@ -318,17 +236,12 @@ export default function AssignWagonsPage() {
             <button className="btn btn-ghost btn-sm" onClick={() => navigate(-1)}>
               <BackIcon /> Back
             </button>
-            <button
-              className="btn btn-primary btn-lg"
-              onClick={handleProceed}
-              disabled={wagons.length === 0 || !rakeId.trim() || rakeLoading}
-            >
+            <button className="btn btn-primary btn-lg" onClick={handleProceed} disabled={wagons.length === 0 || !rakeId.trim() || rakeLoading}>
               Proceed to Loading <ArrowRightIcon />
             </button>
           </div>
         </div>
 
-        {/* Rule reminder */}
         <div className="alert alert-info">
           <InfoIcon />
           <div style={{ fontSize: 12.5 }}>
@@ -343,7 +256,6 @@ export default function AssignWagonsPage() {
   )
 }
 
-// ── Icons ────────────────────────────────────────────────────────
 function WagonIcon({ size = 16 }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">

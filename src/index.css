@@ -903,13 +903,13 @@ select.form-control {
   box-shadow: var(--shadow-sm);
 }
 .consignee-card.active {
-  border-color: var(--navy-400);
-  background: var(--navy-50);
-  box-shadow: 0 0 0 2px rgba(59,110,196,0.15);
+  border-color: var(--navy-600);
+  border-width: 2px;
+  background: var(--navy-100);
+  box-shadow: 0 0 0 3px rgba(59,110,196,0.2), var(--shadow-md);
 }
 .consignee-card.done {
-  border-color: var(--green-200);
-  background: var(--green-50);
+  /* No special coloring for loaded consignees */
 }
 .consignee-card-top {
   display: flex;

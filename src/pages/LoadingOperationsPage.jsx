@@ -1,13 +1,12 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useLocation } from 'react-router-dom'
 import AppShell from '../components/layout/AppShell.jsx'
-import { fetchRakeInfo, fetchLoadingReport, fetchPlateInfo, submitWagonLoad } from '../api/index.js'
+import { fetchRakeInfo, fetchLoadingReport, fetchPlateInfo, submitWagonLoad, fetchLoadedDetails, fetchWagonsByRake } from '../api/index.js'
 import { exportSessionJson, generateLoadingPdf, buildWagonPayloads, submitWagonRequests } from '../utils/export.js'
 import { useToast } from '../context/ToastContext.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
 
 const SESSION_KEY      = 'bsp_loading_session'
-const WAGONS_KEY       = 'bsp_wagons_session'
 const SESSIONS_MAP_KEY = 'bsp_sessions_map'
 
 function loadSavedSession() {
@@ -53,9 +52,7 @@ export default function LoadingOperationsPage() {
   const [quickEntry, setQuickEntry] = useState('')
   const [quickError, setQuickError] = useState('')
 
-  const [wagons, setWagons] = useState(() => {        // [{ wagonNo, consigneeCode }]
-    try { return JSON.parse(localStorage.getItem(WAGONS_KEY) || '[]') } catch { return [] }
-  })
+  const [wagons, setWagons] = useState([])
   const [activeWagon, setActiveWagon] = useState(null)
   const [plateDetail, setPlateDetail] = useState(null)
   const [exporting, setExporting] = useState(false)
@@ -65,6 +62,7 @@ export default function LoadingOperationsPage() {
   const quickEntryRef = useRef(null)
   const quickDebounceRef = useRef(null)
   const loadConsigneesInProgressRef = useRef({})
+  const loadedDetailsRef = useRef(null)
   const prefillHandledRef = useRef(false)
   const [quickResult, setQuickResult] = useState(null) // { type: 'list'|'api', plate?, apiInfo? }
 
@@ -119,10 +117,18 @@ export default function LoadingOperationsPage() {
       } else if (saved.destination?.code) {
         setSessions({ [saved.destination.code]: saved })
       }
-      try {
-        const sw = JSON.parse(localStorage.getItem(WAGONS_KEY) || '[]')
-        if (sw.length) setWagons(sw)
-      } catch {}
+      fetchWagonsByRake(String(saved.rakeId || '')).then(raw => {
+        const wNos = [...new Set(raw.map(r => (r.DISPATCH_NM || '').trim()).filter(Boolean))]
+        if (wNos.length) {
+          const wagonConsMap = {}
+          ;(saved.consignees || []).forEach(c => {
+            c.plates?.forEach(p => {
+              if (p.loaded && p.wagonNo && !wagonConsMap[p.wagonNo]) wagonConsMap[p.wagonNo] = c.consigneeCode
+            })
+          })
+          setWagons(wNos.map(wNo => ({ wagonNo: wNo, consigneeCode: wagonConsMap[wNo] || null })))
+        }
+      }).catch(() => {})
       setStep('LOADING')
     }
   }, [location.state]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -133,10 +139,6 @@ export default function LoadingOperationsPage() {
     }
   }, [activeCode])
 
-  useEffect(() => {
-    try { localStorage.setItem(WAGONS_KEY, JSON.stringify(wagons)) } catch {}
-  }, [wagons])
-
   async function handleFetchRake() {
     const id = rakeInput.trim().toUpperCase()
     if (!id) {
@@ -144,6 +146,7 @@ export default function LoadingOperationsPage() {
       return
     }
 
+    loadedDetailsRef.current = null
     setRakeLoading(true)
     try {
       const info = await fetchRakeInfo(id)
@@ -195,7 +198,36 @@ export default function LoadingOperationsPage() {
     setConsLoading(true)
 
     try {
-      const consignees = await fetchLoadingReport(dest.code)
+      if (!loadedDetailsRef.current) {
+        loadedDetailsRef.current = await fetchLoadedDetails(rakeId).catch(() => [])
+      }
+      const loadedRaw = loadedDetailsRef.current
+      const plateWagonMap = {}
+      if (Array.isArray(loadedRaw)) {
+        for (const row of loadedRaw) {
+          const wNo = (row.DISPATCH_NM || '').trim()
+          const pNo = (row.CHILD_PLATE_NO || '').trim()
+          if (wNo && pNo) plateWagonMap[pNo] = wNo
+        }
+      }
+      const rawConsignees = await fetchLoadingReport(dest.code)
+      const consignees = rawConsignees.map(c => ({
+        ...c,
+        plates: c.plates.map(p => {
+          const wagonNo = plateWagonMap[p.plateNo]
+          if (wagonNo) return { ...p, loaded: true, loadedAt: new Date().toISOString(), wagonNo }
+          return p
+        }),
+      }))
+      setWagons(prev => {
+        const wagonConsMap = {}
+        consignees.forEach(c => {
+          c.plates.forEach(p => {
+            if (p.loaded && p.wagonNo && !wagonConsMap[p.wagonNo]) wagonConsMap[p.wagonNo] = c.consigneeCode
+          })
+        })
+        return prev.map(w => ({ ...w, consigneeCode: w.consigneeCode || wagonConsMap[w.wagonNo] || null }))
+      })
       const newSession = {
         rakeId,
         rakeInfo: info || rakeInfo,
@@ -867,7 +899,7 @@ export default function LoadingOperationsPage() {
                         >
                           <div className="consignee-card-top">
                             <span className="consignee-code-badge">{c.consigneeCode}</span>
-                            {hasLoaded && <span className="badge badge-success" style={{ fontSize: 10 }}><span className="badge-dot" />Loaded</span>}
+                            {hasLoaded && <span className="badge badge-gray" style={{ fontSize: 10 }}><span className="badge-dot" />Loaded</span>}
                             {!hasOkPlates && <span className="badge badge-neutral" style={{ fontSize: 10 }}>No OK Plates</span>}
                           </div>
 
@@ -980,8 +1012,9 @@ export default function LoadingOperationsPage() {
                                   display: 'flex', flexDirection: 'column', gap: 5,
                                   padding: '7px 8px',
                                   borderRadius: 'var(--r-md)',
-                                  border: `1.5px solid ${isActive ? 'var(--navy-400)' : canSelect ? 'var(--border-subtle)' : 'var(--border-default)'}`,
+                                  border: `${isActive ? '2px' : '1.5px'} solid ${isActive ? 'var(--navy-600)' : canSelect ? 'var(--border-subtle)' : 'var(--border-default)'}`,
                                   background: isActive ? 'var(--navy-100)' : canSelect ? 'var(--bg-surface)' : 'var(--gray-50)',
+                                  boxShadow: isActive ? '0 0 0 3px rgba(59,110,196,0.2), var(--shadow-md)' : 'none',
                                   cursor: canSelect ? 'pointer' : 'not-allowed',
                                   opacity: !canSelect ? 0.55 : 1,
                                   userSelect: 'none',
@@ -1493,9 +1526,9 @@ export default function LoadingOperationsPage() {
                   setActiveCode(null)
                   setActiveWagon(null)
                   setWagons([])
-                  localStorage.removeItem(WAGONS_KEY)
                   localStorage.removeItem(SESSION_KEY)
                   localStorage.removeItem(SESSIONS_MAP_KEY)
+                  loadedDetailsRef.current = null
                 }}>
                   Start New Session
                 </button>

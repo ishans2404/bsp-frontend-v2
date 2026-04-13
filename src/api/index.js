@@ -542,3 +542,29 @@ export async function fetchLoadedDetails(rakeId) {
   }
 }
 
+// ══════════════════════════════════════════════════════════════════
+//  WAGON — Rake linking
+// ══════════════════════════════════════════════════════════════════
+export async function fetchWagonsByRake(rakeId) {
+  try {
+    const res = await fetch(`${PROXY}/getWagonRakeidDet.jsp?rakeid=${encodeURIComponent(rakeId)}`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = await res.json()
+    return Array.isArray(data) ? data : []
+  } catch (err) {
+    console.error('fetchWagonsByRake failed:', err.message)
+    throw err
+  }
+}
+
+export async function linkWagonToRake(rakeId, wagonNo, status = 1) {
+  try {
+    const res = await fetch(`${PROXY}/postWagonRakeid.jsp?rakeid=${encodeURIComponent(rakeId)}&wagon=${encodeURIComponent(wagonNo)}&destcd=&consignee=&status=${status}`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return { success: true }
+  } catch (err) {
+    console.error('linkWagonToRake failed:', err.message)
+    throw err
+  }
+}
+

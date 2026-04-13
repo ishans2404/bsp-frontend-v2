@@ -4,22 +4,6 @@ import AppShell from '../components/layout/AppShell.jsx'
 import { fetchRakesList, fetchLoadingReport } from '../api/index.js'
 import { useToast } from '../context/ToastContext.jsx'
 
-const MOCK_COMPLETED_RAKES = [
-  {
-    rakeId: '26041001',
-    destinations: [
-      { code: 'SAIT', name: 'TONDIARPET SAIL SDG' }
-    ],
-    status: 'COMPLETED',
-    totalWagons: '',
-    createdAt: new Date(Date.now() - 2 * 86400000).toISOString(),
-    createdBy: 'admin',
-    completedAt: new Date(Date.now() - 86400000).toISOString(),
-    loadedPlates: '',
-    totalPlates: '',
-  },
-]
-
 const STATUS_CONFIG = {
   ACTIVE:      { label: 'Active',      badge: 'badge-navy',    dot: true },
   IN_PROGRESS: { label: 'In Progress', badge: 'badge-warning', dot: true },
@@ -72,11 +56,7 @@ export default function HomePage() {
     setLoading(true)
     try {
       const data = await fetchRakesList()
-      const existingIds = new Set(data.map(r => String(r.rakeId)))
-      // const mockToAdd = MOCK_COMPLETED_RAKES.filter(m => !existingIds.has(String(m.rakeId)))
-      // setRakes([...mockToAdd, ...data])
-      const mockToAdd = MOCK_COMPLETED_RAKES
-      setRakes([...mockToAdd])
+      setRakes(data)
     } catch {
       toastCtx.error('Failed to load rakes.')
     } finally {
@@ -113,22 +93,7 @@ export default function HomePage() {
     })
   }
 
-  function handleModify(rake) {
-    navigate('/assign-wagons', {
-      state: {
-        prefillRakeId:   String(rake.rakeId),
-        prefillDest:     rake.destinations?.[0] ?? null,
-        prefillRakeInfo: {
-          rakeId:       String(rake.rakeId),
-          status:       rake.status,
-          destinations: rake.destinations,
-          totalWagons:  rake.totalWagons,
-          createdAt:    rake.createdAt,
-        },
-        isModification: true,
-      },
-    })
-  }
+
 
   // Derived
   const filtered = rakes
@@ -380,16 +345,7 @@ export default function HomePage() {
                               {rake.status === 'IN_PROGRESS' ? <><ResumeIcon size={12} /> Resume</> : <><LoadIcon size={12} /> Start Loading</>}
                             </button>
                           ) : (
-                            rake.status === 'COMPLETED' ? (
-                              <button
-                                className="btn btn-sm btn-secondary"
-                                onClick={e => { e.stopPropagation(); handleModify(rake) }}
-                              >
-                                <EditIcon size={12} /> Modify
-                              </button>
-                            ) : (
-                              <span className="badge badge-neutral" style={{ fontSize:11 }}>Done</span>
-                            )
+                            <span className="badge badge-neutral" style={{ fontSize:11 }}>Done</span>
                           )}
                         </td>
                       </tr>
@@ -495,7 +451,4 @@ function RefreshIcon({ size=14, spin=false }) {
     <polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/>
     <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
   </svg>
-}
-function EditIcon({ size=13 }) {
-  return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
 }
