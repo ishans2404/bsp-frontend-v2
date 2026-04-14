@@ -269,8 +269,12 @@ export default function LoadingReportPage() {
                           <th style={{ textAlign: 'right' }}>Ord</th>
                           <th style={{ textAlign: 'right' }}>Desp</th>
                           <th style={{ textAlign: 'right' }}>Bal</th>
-                          <th style={{ textAlign: 'right' }}>PM BFD</th>
+                          <th style={{ textAlign: 'right' }}>TEST</th>
+                          <th style={{ textAlign: 'right' }}>NORM</th>
+                          <th style={{ textAlign: 'right' }}>FIN</th>
                           <th style={{ textAlign: 'right' }}>OK Plates</th>
+                          <th style={{ textAlign: 'right' }}>RA Plates</th>
+                          <th>PLATES Raw</th>
                           <th>Remark</th>
                           <th>Plates / Heat Info</th>
                         </tr>
@@ -279,10 +283,17 @@ export default function LoadingReportPage() {
                         {[...c.orders].sort((o1, o2) => {
                           const okCount1 = okPlates.filter(p => p.ordNo === o1.ordNo).length
                           const okCount2 = okPlates.filter(p => p.ordNo === o2.ordNo).length
-                          return okCount2 - okCount1 // descending: most OK plates first
+                          // Primary: OK plates (descending)
+                          if (okCount2 !== okCount1) return okCount2 - okCount1
+                          // Secondary: Grade (ascending)
+                          if (o1.grade !== o2.grade) return o1.grade.localeCompare(o2.grade)
+                          // Tertiary: TDC (ascending)
+                          if (o1.tdc !== o2.tdc) return o1.tdc.localeCompare(o2.tdc)
+                          // Quaternary: Size (ascending)
+                          return o1.ordSize.localeCompare(o2.ordSize)
                         }).map((o, i) => {
-                          // Count OK plates for this order
                           const okForOrder = okPlates.filter(p => p.ordNo === o.ordNo).length
+                          const raForOrder = c.plates.filter(p => p.plateType === 'RA' && p.ordNo === o.ordNo).length
                           return (
                             <tr key={`${o.ordNo}-${i}`}>
                               <td className="td-mono" style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>{o.ordNo}</td>
@@ -299,12 +310,23 @@ export default function LoadingReportPage() {
                               <td className="td-mono" style={{ textAlign: 'right' }}>{o.ord}</td>
                               <td className="td-mono" style={{ textAlign: 'right' }}>{o.desp}</td>
                               <td className="td-mono" style={{ textAlign: 'right', fontWeight: 600, color: o.bal > 0 ? 'var(--navy-600)' : 'var(--text-muted)' }}>{o.bal}</td>
-                              <td className="td-mono" style={{ textAlign: 'right' }}>{o.pmBfd}</td>
+                              <td className="td-mono" style={{ textAlign: 'right' }}>{o.test ?? '—'}</td>
+                              <td className="td-mono" style={{ textAlign: 'right' }}>{o.norm ?? '—'}</td>
+                              <td className="td-mono" style={{ textAlign: 'right' }}>{o.fin ?? '—'}</td>
                               <td style={{ textAlign: 'right' }}>
                                 {okForOrder > 0
                                   ? <span className="badge badge-success">{okForOrder}</span>
                                   : <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>—</span>
                                 }
+                              </td>
+                              <td style={{ textAlign: 'right' }}>
+                                {raForOrder > 0
+                                  ? <span className="badge badge-warning">{raForOrder}</span>
+                                  : <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>—</span>
+                                }
+                              </td>
+                              <td style={{ maxWidth: 200, fontSize: 10.5, fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', wordBreak: 'break-all' }}>
+                                {o.platesRaw || '—'}
                               </td>
                               <td style={{ fontSize: 11, color: 'var(--amber-700)' }}>
                                 {[o.remart, o.ordPr].filter(Boolean).join(' · ') || '—'}
@@ -346,6 +368,37 @@ export default function LoadingReportPage() {
                       </div>
                     </div>
                   )}
+
+                  {/* RA plates sub-section */}
+                  {(() => {
+                    const raPlates = c.plates.filter(p => p.plateType === 'RA')
+                    return raPlates.length > 0 ? (
+                      <div style={{ background: 'var(--amber-50)', borderTop: '1px solid #fde68a', padding: '10px 16px' }}>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--amber-700)', letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 8 }}>
+                          RA Plates ({raPlates.length})
+                        </div>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                          {raPlates.map(p => (
+                            <div key={p.plateNo} style={{
+                              padding: '4px 10px',
+                              background: 'var(--bg-surface)',
+                              border: '1px solid #fde68a',
+                              borderRadius: 'var(--r-md)',
+                              fontSize: 11.5,
+                              fontFamily: 'var(--font-mono)',
+                              fontWeight: 600,
+                              color: 'var(--amber-700)',
+                            }}>
+                              {p.plateNo}
+                              <span style={{ fontFamily: 'var(--font)', fontSize: 10, color: 'var(--text-muted)', fontWeight: 400, marginLeft: 5 }}>
+                                {p.heatNo} · {p.grade}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null
+                  })()}
                 </div>
               )}
             </div>
