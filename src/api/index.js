@@ -227,6 +227,20 @@ function parseFieldPlates(fieldStr, fieldName) {
     )
   }
 
+  // ── TPI-style plates (HEAT#-PLATES format) ────────────────────
+  // e.g. B409233#-3480587/1, 587/2 B412046#-3499949/2, 955/2
+  const tpiStyleRe = /([A-Z]\d{5,6})#-(\d[\d/,\s]*)/g
+  while ((m = tpiStyleRe.exec(str)) !== null) {
+    const heatNo = m[1]
+    const parts  = m[2].split(',').map(s => s.trim()).filter(s => /^\d/.test(s))
+    if (!parts.length) continue
+    if (parts[0].split('/')[0].length < 7) continue
+    const type = inferTypeFromContext(str.substring(0, m.index), fieldDefault)
+    expandPlates(parts).forEach(plateNo =>
+      out.push({ plateNo, heatNo, plateType: type })
+    )
+  }
+
   return out
 }
 
