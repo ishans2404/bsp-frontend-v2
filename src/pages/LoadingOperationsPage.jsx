@@ -622,7 +622,19 @@ export default function LoadingOperationsPage() {
         (w.consigneeCode || '').toLowerCase().includes(q)
     })
     .sort((a, b) => {
-      // Prioritize wagons assigned to the currently selected consignee
+      // Check if active consignee has any assigned wagons
+      const activeConsigneeHasWagons = activeCode ? wagons.some(w => w.consigneeCode === activeCode) : false
+      
+      // If no wagons assigned to this consignee, prioritize unassigned wagons
+      if (!activeConsigneeHasWagons && activeCode) {
+        const aIsUnassigned = a.consigneeCode === null
+        const bIsUnassigned = b.consigneeCode === null
+        if (aIsUnassigned && !bIsUnassigned) return -1
+        if (!aIsUnassigned && bIsUnassigned) return 1
+        return 0
+      }
+      
+      // Default: Prioritize wagons assigned to the currently selected consignee
       const aIsActive = a.consigneeCode === activeCode
       const bIsActive = b.consigneeCode === activeCode
       if (aIsActive && !bIsActive) return -1
