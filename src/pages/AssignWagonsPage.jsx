@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import AppShell from '../components/layout/AppShell.jsx'
+import Modal from '../components/shared/Modal.jsx'
 import { fetchRakeInfo, fetchWagonsByRake, linkWagonToRake } from '../api/index.js'
 import { useToast } from '../context/ToastContext.jsx'
 
@@ -22,6 +23,7 @@ export default function AssignWagonsPage() {
   const [wagons, setWagons] = useState([])
   const [wagonsLoading, setWagonsLoading] = useState(false)
   const [input, setInput]   = useState('')
+  const [showConfirmModal, setShowConfirmModal] = useState(false)
   const inputRef = useRef(null)
 
   const destinations = rakeInfo?.destinations || (state.prefillDest ? [state.prefillDest] : [])
@@ -33,8 +35,24 @@ export default function AssignWagonsPage() {
     setWagonsLoading(true)
     fetchWagonsByRake(id)
       .then(raw => {
-        const wNos = [...new Set(raw.map(r => (r.DISPATCH_NM || '').trim()).filter(Boolean))]
-        setWagons(wNos)
+        const byWagon = new Map()
+        raw.forEach(r => {
+          const wagonNo = String(r.DISPATCH_NM || '').trim().toUpperCase()
+          if (!wagonNo) return
+
+          const dispatchCd = String(r.DISPATCH_CD || '').trim() || null
+          const existing = byWagon.get(wagonNo)
+
+          if (!existing) {
+            byWagon.set(wagonNo, { wagonNo, dispatchCd })
+            return
+          }
+
+          if (!existing.dispatchCd && dispatchCd) {
+            byWagon.set(wagonNo, { ...existing, dispatchCd })
+          }
+        })
+        setWagons(Array.from(byWagon.values()))
       })
       .catch(() => {})
       .finally(() => setWagonsLoading(false))
@@ -72,10 +90,10 @@ export default function AssignWagonsPage() {
     if (!rakeId.trim()) { toast.warning('Enter Rake ID first.'); return }
     const val = input.trim().toUpperCase()
     if (!val) return
-    if (wagons.includes(val)) { toast.warning(`Wagon "${val}" is already in the list.`); return }
+    if (wagons.some(w => w.wagonNo === val)) { toast.warning(`Wagon "${val}" is already in the list.`); return }
     try {
       await linkWagonToRake(rakeId.trim(), val, 1)
-      setWagons(prev => [...prev, val])
+      setWagons(prev => [...prev, { wagonNo: val, dispatchCd: null }])
       setInput('')
       inputRef.current?.focus()
     } catch {
@@ -89,7 +107,7 @@ export default function AssignWagonsPage() {
     } catch {
       // Continue with local removal even if API fails
     }
-    setWagons(prev => prev.filter(w => w !== wNo))
+    setWagons(prev => prev.filter(w => w.wagonNo !== wNo))
   }
 
   async function handleProceed() {
@@ -98,12 +116,20 @@ export default function AssignWagonsPage() {
     if (!id) { toast.warning('Please enter a Rake ID.'); return }
     const info = await ensureRakeInfo(id)
     if (!info) return
+    setShowConfirmModal(true)
+  }
+
+  async function handleConfirmProceed() {
+    const id = rakeId.trim().toUpperCase()
+    const info = await ensureRakeInfo(id)
+    if (!info) return
+    setShowConfirmModal(false)
     navigate('/loading-operations', {
       state: {
         prefillRakeId: id,
         prefillDest: info.destinations?.[0] || null,
         prefillRakeInfo: info,
-        prefillWagons: wagons,
+        prefillWagons: wagons.map(w => w.wagonNo),
       },
     })
   }
@@ -211,13 +237,20 @@ export default function AssignWagonsPage() {
             ) : wagons.length > 0 ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
                 {wagons.map((w, i) => (
-                  <div key={w} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', border: '1px solid var(--border-subtle)', borderRadius: 'var(--r-md)', background: 'var(--bg-surface)' }}>
+                  <div key={w.wagonNo} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', border: '1px solid var(--border-subtle)', borderRadius: 'var(--r-md)', background: 'var(--bg-surface)' }}>
                     <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', minWidth: 22 }}>
                       {String(i + 1).padStart(2, '0')}
                     </span>
                     <WagonIcon size={15} />
-                    <span style={{ flex: 1, fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: 14, color: 'var(--text-primary)' }}>{w}</span>
-                    <button className="btn btn-ghost btn-icon btn-sm" onClick={() => handleRemove(w)} title="Remove wagon">
+                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
+                      <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: 14, color: 'var(--text-primary)' }}>{w.wagonNo}</span>
+                      {w.dispatchCd && (
+                        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                          Consignee Code: <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>{w.dispatchCd}</span>
+                        </span>
+                      )}
+                    </div>
+                    <button className="btn btn-ghost btn-icon btn-sm" onClick={() => handleRemove(w.wagonNo)} title="Remove wagon">
                       <RemoveIcon />
                     </button>
                   </div>
@@ -252,6 +285,39 @@ export default function AssignWagonsPage() {
         </div>
 
       </div>
+
+      <Modal
+        open={showConfirmModal}
+        onClose={() => setShowConfirmModal(false)}
+        title="Confirm Wagon Assignment"
+        footer={
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+            <button className="btn btn-ghost btn-sm" onClick={() => setShowConfirmModal(false)}>
+              Cancel
+            </button>
+            <button className="btn btn-primary btn-sm" onClick={handleConfirmProceed}>
+              Confirm & Proceed
+            </button>
+          </div>
+        }
+      >
+        <div style={{ fontSize: 14, color: 'var(--text-primary)' }}>
+          <p>Ready to proceed with the following wagons for <strong>Rake {rakeId}</strong>?</p>
+          <div style={{ marginTop: 12, padding: '12px', background: 'var(--bg-surface)', borderRadius: 'var(--r-md)', border: '1px solid var(--border-subtle)' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {wagons.map(w => (
+                <div key={w.wagonNo} style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, color: 'var(--text-primary)' }}>{w.wagonNo}</span>
+                  {w.dispatchCd && <span style={{ marginLeft: 8 }}>- Consignee Code: {w.dispatchCd}</span>}
+                </div>
+              ))}
+            </div>
+          </div>
+          <p style={{ marginTop: 12, fontSize: 12, color: 'var(--text-muted)' }}>
+            You can modify these wagons later if needed.
+          </p>
+        </div>
+      </Modal>
     </AppShell>
   )
 }
