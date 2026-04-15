@@ -63,27 +63,33 @@ export default function HomePage() {
     try {
       const data = await fetchRakesList()
       setRakes(data)
+      setLoading(false)
       
-      // Fetch wagon counts for each rake
-      const counts = {}
-      for (const rake of data) {
-        try {
-          const wagons = await fetchWagonsByRake(rake.rakeId)
-          // Count unique wagon numbers (DISPATCH_NM)
-          const uniqueWagons = new Set()
-          for (const w of wagons) {
-            const wagonNo = String(w.DISPATCH_NM || '').trim()
-            if (wagonNo) uniqueWagons.add(wagonNo)
+      // Fetch wagon counts in parallel without blocking
+      Promise.all(
+        data.map(async (rake) => {
+          try {
+            const wagons = await fetchWagonsByRake(rake.rakeId)
+            // Count unique wagon numbers (DISPATCH_NM)
+            const uniqueWagons = new Set()
+            for (const w of wagons) {
+              const wagonNo = String(w.DISPATCH_NM || '').trim()
+              if (wagonNo) uniqueWagons.add(wagonNo)
+            }
+            return { rakeId: rake.rakeId, count: uniqueWagons.size }
+          } catch {
+            return null
           }
-          counts[rake.rakeId] = uniqueWagons.size
-        } catch {
-          // Ignore errors and keep existing count
-        }
-      }
-      setWagonCounts(counts)
+        })
+      ).then((results) => {
+        const counts = {}
+        results.forEach((result) => {
+          if (result) counts[result.rakeId] = result.count
+        })
+        setWagonCounts(counts)
+      })
     } catch {
       toastCtx.error('Failed to load rakes.')
-    } finally {
       setLoading(false)
     }
   }, [toastCtx])
