@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import AppShell from '../components/layout/AppShell.jsx'
-import { fetchRakesList, fetchLoadingReport } from '../api/index.js'
+import { fetchRakesList, fetchLoadingReport, fetchWagonsByRake } from '../api/index.js'
 import { useToast } from '../context/ToastContext.jsx'
 
 const STATUS_CONFIG = {
@@ -26,6 +26,11 @@ function fmtDateFull(iso) {
   return new Date(iso).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })
 }
 
+function fmtDateOnly(iso) {
+  if (!iso) return '—'
+  return new Date(iso).toLocaleDateString('en-IN', { dateStyle: 'medium' })
+}
+
 export default function HomePage() {
   const navigate = useNavigate()
   const toastCtx = useToast()
@@ -37,6 +42,7 @@ export default function HomePage() {
   const [sortCol,   setSortCol]   = useState('createdAt')
   const [sortDir,   setSortDir]   = useState('desc')
   const [activeSession, setActiveSession] = useState(null)
+  const [wagonCounts, setWagonCounts] = useState({})
 
   useEffect(() => {
     function checkActiveSession() {
@@ -57,12 +63,30 @@ export default function HomePage() {
     try {
       const data = await fetchRakesList()
       setRakes(data)
+      
+      // Fetch wagon counts for each rake
+      const counts = {}
+      for (const rake of data) {
+        try {
+          const wagons = await fetchWagonsByRake(rake.rakeId)
+          // Count unique wagon numbers (DISPATCH_NM)
+          const uniqueWagons = new Set()
+          for (const w of wagons) {
+            const wagonNo = String(w.DISPATCH_NM || '').trim()
+            if (wagonNo) uniqueWagons.add(wagonNo)
+          }
+          counts[rake.rakeId] = uniqueWagons.size
+        } catch {
+          // Ignore errors and keep existing count
+        }
+      }
+      setWagonCounts(counts)
     } catch {
       toastCtx.error('Failed to load rakes.')
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [toastCtx])
 
   useEffect(() => { load() }, [load])
 
@@ -272,8 +296,7 @@ export default function HomePage() {
                     <SortTh col="rakeId"    label="Rake ID"       current={sortCol} dir={sortDir} onSort={handleSort} />
                     <th>Destination(s)</th>
                     <th>Status</th>
-                    <SortTh col="totalWagons" label="Wagons"      current={sortCol} dir={sortDir} onSort={handleSort} />
-                    <th>Loaded Plates</th>
+                    <th style={{ textAlign:'center' }}>Wagons</th>
                     <SortTh col="createdAt" label="Created"       current={sortCol} dir={sortDir} onSort={handleSort} />
                     <th>By</th>
                     <th style={{ textAlign:'right' }}>Action</th>
@@ -311,29 +334,11 @@ export default function HomePage() {
                             {sc.label}
                           </span>
                         </td>
-                        <td className="td-mono">
-                          {rake.totalWagons ?? <span style={{ color:'var(--text-muted)' }}>—</span>}
+                        <td style={{ textAlign:'center', fontSize:12.5, fontFamily:'var(--font-mono)', fontWeight:600 }}>
+                          {wagonCounts[rake.rakeId] ?? <span style={{ color:'var(--text-muted)' }}>—</span>}
                         </td>
                         <td>
-                          {rake.loadedPlates != null ? (
-                            <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-                              <div className="progress-bar" style={{ width:60, height:5 }}>
-                                <div
-                                  className={`progress-bar-fill ${rake.loadedPlates === rake.totalPlates ? 'success' : ''}`}
-                                  style={{ width:`${Math.round((rake.loadedPlates / (rake.totalPlates || 1)) * 100)}%` }}
-                                />
-                              </div>
-                              <span style={{ fontSize:11.5, color:'var(--text-secondary)', fontFamily:'var(--font-mono)' }}>
-                                {rake.loadedPlates}/{rake.totalPlates}
-                              </span>
-                            </div>
-                          ) : (
-                            <span style={{ color:'var(--text-muted)', fontSize:12 }}>—</span>
-                          )}
-                        </td>
-                        <td>
-                          <div style={{ fontSize:12.5, color:'var(--text-primary)' }}>{fmtDateTime(rake.createdAt)}</div>
-                          <div style={{ fontSize:10.5, color:'var(--text-muted)', marginTop:1 }}>{fmtDateFull(rake.createdAt)}</div>
+                          <div style={{ fontSize:12.5, color:'var(--text-primary)' }}>{fmtDateOnly(rake.createdAt)}</div>
                         </td>
                         <td style={{ fontSize:12.5 }}>{rake.createdBy || '—'}</td>
                         <td style={{ textAlign:'right' }}>

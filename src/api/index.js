@@ -4,8 +4,8 @@
  */
 
 const PROXY = '/api-proxy/MES_MOB/APP'
-const LOADING_REPORT_CACHE_KEY = 'bsp_loading_report_cache_v1'
-const LOADING_REPORT_CACHE_TTL_MS = 2 * 60 * 60 * 1000 // 2 hours
+const LOADING_REPORT_CACHE_KEY = 'bsp_loading_report_cache'
+const LOADING_REPORT_CACHE_TTL_MS = 6 * 60 * 60 * 1000 // 6 hours
 
 let destinationsCache = null
 let loadingReportCache = loadLoadingReportCache()

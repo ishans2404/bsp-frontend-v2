@@ -41,15 +41,19 @@ export default function AssignWagonsPage() {
           if (!wagonNo) return
 
           const dispatchCd = String(r.DISPATCH_CD || '').trim() || null
+          const custNm = String(r.CUST_NM || '').trim() || null
           const existing = byWagon.get(wagonNo)
 
           if (!existing) {
-            byWagon.set(wagonNo, { wagonNo, dispatchCd })
+            byWagon.set(wagonNo, { wagonNo, dispatchCd, custNm, isNewlyAdded: false })
             return
           }
 
           if (!existing.dispatchCd && dispatchCd) {
             byWagon.set(wagonNo, { ...existing, dispatchCd })
+          }
+          if (!existing.custNm && custNm) {
+            byWagon.set(wagonNo, { ...existing, custNm })
           }
         })
         setWagons(Array.from(byWagon.values()))
@@ -91,21 +95,21 @@ export default function AssignWagonsPage() {
     const val = input.trim().toUpperCase()
     if (!val) return
     if (wagons.some(w => w.wagonNo === val)) { toast.warning(`Wagon "${val}" is already in the list.`); return }
-    try {
-      await linkWagonToRake(rakeId.trim(), val, 1)
-      setWagons(prev => [...prev, { wagonNo: val, dispatchCd: null }])
-      setInput('')
-      inputRef.current?.focus()
-    } catch {
-      toast.error(`Failed to link wagon "${val}" to rake. Please try again.`)
-    }
+    // Add wagon to local state only; API call deferred to handleConfirmProceed
+    setWagons(prev => [...prev, { wagonNo: val, dispatchCd: null, custNm: null, isNewlyAdded: true }])
+    setInput('')
+    inputRef.current?.focus()
   }
 
   async function handleRemove(wNo) {
-    try {
-      await linkWagonToRake(rakeId.trim(), wNo, 0)
-    } catch {
-      // Continue with local removal even if API fails
+    const wagon = wagons.find(w => w.wagonNo === wNo)
+    // Only call API for wagons fetched from the backend; newly added ones are not yet linked
+    if (wagon && !wagon.isNewlyAdded) {
+      try {
+        await linkWagonToRake(rakeId.trim(), wNo, 0)
+      } catch {
+        // Continue with local removal even if API fails
+      }
     }
     setWagons(prev => prev.filter(w => w.wagonNo !== wNo))
   }
@@ -123,6 +127,19 @@ export default function AssignWagonsPage() {
     const id = rakeId.trim().toUpperCase()
     const info = await ensureRakeInfo(id)
     if (!info) return
+
+    // Send linkWagonToRake for newly added wagons only
+    const newWagons = wagons.filter(w => w.isNewlyAdded)
+    for (const wagon of newWagons) {
+      try {
+        await linkWagonToRake(id, wagon.wagonNo, 1)
+      } catch (err) {
+        console.error(`Failed to link wagon ${wagon.wagonNo}:`, err)
+        toast.error(`Failed to link wagon ${wagon.wagonNo}. Please try again.`)
+        return
+      }
+    }
+
     setShowConfirmModal(false)
     navigate('/loading-operations', {
       state: {
@@ -236,20 +253,36 @@ export default function AssignWagonsPage() {
               </div>
             ) : wagons.length > 0 ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-                {wagons.map((w, i) => (
-                  <div key={w.wagonNo} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', border: '1px solid var(--border-subtle)', borderRadius: 'var(--r-md)', background: 'var(--bg-surface)' }}>
-                    <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', minWidth: 22 }}>
-                      {String(i + 1).padStart(2, '0')}
-                    </span>
-                    <WagonIcon size={15} />
-                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
-                      <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: 14, color: 'var(--text-primary)' }}>{w.wagonNo}</span>
-                      {w.dispatchCd && (
-                        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                          Consignee Code: <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>{w.dispatchCd}</span>
-                        </span>
+                {wagons
+                  .sort((a, b) => {
+                    if (a.isNewlyAdded !== b.isNewlyAdded) {
+                      return a.isNewlyAdded ? -1 : 1
+                    }
+                    return a.wagonNo.localeCompare(b.wagonNo)
+                  })
+                  .map((w, i) => (
+                  <div key={w.wagonNo} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', border: w.isNewlyAdded ? '2px solid #10b981b8' : '1px solid var(--border-subtle)', borderRadius: 'var(--r-md)', background: 'var(--bg-surface)' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', minWidth: 22 }}>
+                        {String(i + 1).padStart(2, '0')}
+                      </span>
+                      <WagonIcon size={16} />
+                      <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: 15, color: 'var(--text-primary)' }}>{w.wagonNo}</span>
+                      {w.isNewlyAdded && (
+                        <span style={{ fontSize: 9, fontStyle: 'italic', color: 'var(--text-primary)', textTransform: 'uppercase', letterSpacing: 0.5 }}>NEW</span>
                       )}
                     </div>
+                    <div style={{ flex: 1 }} />
+                    {(w.custNm || w.dispatchCd) && (
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 1 }}>
+                        {w.custNm && (
+                          <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, fontSize: 13, color: 'var(--text-primary)' }}>{w.custNm}</span>
+                        )}
+                        {w.dispatchCd && (
+                          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-secondary)' }}>{w.dispatchCd}</span>
+                        )}
+                      </div>
+                    )}
                     <button className="btn btn-ghost btn-icon btn-sm" onClick={() => handleRemove(w.wagonNo)} title="Remove wagon">
                       <RemoveIcon />
                     </button>
@@ -306,9 +339,18 @@ export default function AssignWagonsPage() {
           <div style={{ marginTop: 12, padding: '12px', background: 'var(--bg-surface)', borderRadius: 'var(--r-md)', border: '1px solid var(--border-subtle)' }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               {wagons.map(w => (
-                <div key={w.wagonNo} style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                  <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, color: 'var(--text-primary)' }}>{w.wagonNo}</span>
-                  {w.dispatchCd && <span style={{ marginLeft: 8 }}>- Consignee Code: {w.dispatchCd}</span>}
+                <div key={w.wagonNo} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid var(--border-subtle)' }}>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, fontSize: 13, color: 'var(--text-primary)' }}>{w.wagonNo}</span>
+                  {(w.custNm || w.dispatchCd) && (
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 1 }}>
+                      {w.custNm && (
+                        <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, fontSize: 12, color: 'var(--text-primary)' }}>{w.custNm}</span>
+                      )}
+                      {w.dispatchCd && (
+                        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)' }}>{w.dispatchCd}</span>
+                      )}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

@@ -5,9 +5,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: bsp-frontend
+    container_name: plate-mill-app
     ports:
       - "3000:3000"
+    env_file:
+      - .env.docker
     environment:
       - NODE_ENV=production
     # For development, uncomment below and comment out the CMD in Dockerfile for hot reload:
