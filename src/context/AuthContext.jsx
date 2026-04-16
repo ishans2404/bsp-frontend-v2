@@ -1,8 +1,5 @@
-/**
- * AuthContext
- * Simple credential-based auth. Replace `authStrategy` to switch to JWT/API later.
- */
 import React, { createContext, useContext, useState, useEffect } from 'react'
+import { authenticateUser } from '../api/index.js'
 
 const AUTH_KEY = 'bsp_auth_user'
 
@@ -12,36 +9,7 @@ const AUTH_KEY = 'bsp_auth_user'
 //   logout() → void
 const authStrategy = {
   async authenticate(username, password) {
-    try {
-      const apiUrl = `/api-proxy/MES_MOB/APP/mesappLogin.jsp?userid=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`
-      const res = await fetch(apiUrl)
-      
-      if (!res.ok) {
-        return { ok: false, user: null, error: `HTTP ${res.status}: ${res.statusText}` }
-      }
-      
-      const data = await res.json()
-      
-      // Parse response array: [{"NAME":"...","STATUS":"SUCCESS","LOGIN_NAME":"..."}]
-      if (Array.isArray(data) && data.length > 0) {
-        const response = data[0]
-        if (response.STATUS === 'SUCCESS' || (import.meta.env.VITE_USERNAME == username && import.meta.env.VITE_PASSWORD == password)) {
-          return { 
-            ok: true, 
-            user: { 
-              username: response.LOGIN_NAME || username, 
-              displayName: response.NAME || 'User', 
-              role: 'OPERATOR' 
-            }, 
-            error: null 
-          }
-        }
-      }
-      
-      return { ok: false, user: null, error: 'Invalid credentials or unexpected response format.' }
-    } catch (err) {
-      return { ok: false, user: null, error: err.message || 'Authentication failed.' }
-    }
+    return await authenticateUser(username, password)
   },
   logout() {
     // No server call needed for remote auth; replace with token invalidation if needed

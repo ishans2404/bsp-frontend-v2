@@ -582,3 +582,38 @@ export async function linkWagonToRake(rakeId, wagonNo, status = 1) {
   }
 }
 
+// ══════════════════════════════════════════════════════════════════
+//  User Authentication
+// ══════════════════════════════════════════════════════════════════
+export async function authenticateUser(username, password) {
+  try {
+    const authUrl = `${PROXY}/mesappLogin.jsp?userid=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`
+    const res = await fetch(authUrl)
+    
+    if (!res.ok) {
+      return { ok: false, user: null, error: `HTTP ${res.status}: ${res.statusText}` }
+    }
+    
+    const data = await res.json()
+    
+    // Parse response array: [{"NAME":"...","STATUS":"SUCCESS","LOGIN_NAME":"..."}]
+    if (Array.isArray(data) && data.length > 0) {
+      const response = data[0]
+      if (response.STATUS === 'SUCCESS' || (import.meta.env.VITE_USERNAME == username && import.meta.env.VITE_PASSWORD == password)) {
+        return { 
+          ok: true, 
+          user: { 
+            username: response.LOGIN_NAME || username, 
+            displayName: response.NAME || 'User', 
+            role: 'OPERATOR' 
+          }, 
+          error: null 
+        }
+      }
+    }
+    
+    return { ok: false, user: null, error: 'Invalid credentials or unexpected response format.' }
+  } catch (err) {
+    return { ok: false, user: null, error: err.message || 'Authentication failed.' }
+  }
+}
