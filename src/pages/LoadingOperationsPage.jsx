@@ -543,7 +543,7 @@ export default function LoadingOperationsPage() {
       toast.warning('No loaded plates to save.')
       return
     }
-    if (!window.confirm(`Save progress for Rake ${session.rakeId}? Loaded data will be stored in the database.`)) return
+    if (!window.confirm(`Save progress for Rake ${session.rakeId}?`)) return
 
     setSubmission({ status: 'submitting', succeeded: 0, failed: 0, total: payloads.length, failedPayloads: [], submissionType: 1 })
 
