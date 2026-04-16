@@ -5,13 +5,20 @@
  */
 
 // ── JSON Export ──────────────────────────────────────────────────
+function resolveReportMode(session, explicitMode) {
+  if (explicitMode === 'completion' || explicitMode === 'progress') return explicitMode
+  return session?.step === 'COMPLETED' ? 'completion' : 'progress'
+}
+
 export function exportSessionJson(session) {
+  const reportMode = resolveReportMode(session)
+  const reportLabel = reportMode === 'completion' ? 'Completion' : 'Progress'
   const payload = buildSubmitPayload(session)
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
   const url  = URL.createObjectURL(blob)
   const a    = document.createElement('a')
   a.href     = url
-  a.download = `BSP_Loading_${session.rakeId}_${formatDateForFile(new Date())}.json`
+  a.download = `BSP_Loading_${reportLabel}_${session.rakeId}_${formatDateForFile(new Date())}.json`
   document.body.appendChild(a)
   a.click()
   document.body.removeChild(a)
@@ -105,12 +112,18 @@ export function buildSubmitPayload(session) {
   // Summary
   const allConsignees  = allSessions.flatMap(s => s.consignees)
   const totalLoaded    = allConsignees.reduce((s, c) => s + c.plates.filter(p => p.loaded).length, 0)
+  const reportMode = resolveReportMode(session)
+  const nowIso = new Date().toISOString()
+  const savedAt = session.savedAt || nowIso
+  const completedAt = session.completedAt || nowIso
 
   return {
     rakeId:       session.rakeId,
     operatedBy:   session.operatedBy || 'admin',
     startedAt:    session.startedAt,
-    completedAt:  session.completedAt || new Date().toISOString(),
+    savedAt,
+    ...(reportMode === 'completion' ? { completedAt } : {}),
+    reportType: reportMode.toUpperCase(),
     summary: {
       totalDestinations: destinations.length,
       totalConsignees:   allConsignees.length,
@@ -124,9 +137,19 @@ export function buildSubmitPayload(session) {
 }
 
 // ── PDF Report ───────────────────────────────────────────────────
-export async function generateLoadingPdf(session) {
+export async function generateLoadingPdf(session, reportMode) {
   const { default: jsPDF }     = await import('jspdf')
   const { default: autoTable } = await import('jspdf-autotable')
+
+  const resolvedReportMode = resolveReportMode(session, reportMode)
+  const isCompletionReport = resolvedReportMode === 'completion'
+  const reportHeaderTitle = isCompletionReport
+    ? 'BHILAI STEEL PLANT  —  PLATE MILL LOADING COMPLETION REPORT'
+    : 'BHILAI STEEL PLANT  —  PLATE MILL LOADING PROGRESS REPORT'
+  const reportTimestamp = isCompletionReport
+    ? (session.completedAt || session.startedAt || new Date().toISOString())
+    : (session.savedAt || new Date().toISOString())
+  const completedWagonSet = new Set(Array.isArray(session.completedWagons) ? session.completedWagons : [])
 
   const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' })
   const PW  = doc.internal.pageSize.getWidth()   // 297
@@ -150,7 +173,7 @@ export async function generateLoadingPdf(session) {
     doc.setFont('helvetica', 'bold')
     doc.setFontSize(10.5)
     doc.setTextColor(255, 255, 255)
-    doc.text('BHILAI STEEL PLANT  —  PLATE MILL LOADING REPORT', M, 8)
+    doc.text(reportHeaderTitle, M, 8)
 
     doc.setFont('helvetica', 'normal')
     doc.setFontSize(7)
@@ -179,7 +202,7 @@ export async function generateLoadingPdf(session) {
     ['RAKE ID',       String(session.rakeId)],
     ['DESTINATION',   destString],
     ['OPERATOR',      session.operatedBy || 'admin'],
-    ['COMPLETED AT',  formatDateTimeFull(session.completedAt || session.startedAt || new Date().toISOString())],
+    [isCompletionReport ? 'COMPLETED AT' : 'SAVED AT',  formatDateTimeFull(reportTimestamp)],
   ]
   const infoColW = (PW - M * 2) / infoItems.length
   infoItems.forEach(([label, value], i) => {
@@ -280,12 +303,13 @@ export async function generateLoadingPdf(session) {
       sortedPlates.forEach(p => {
         const wagonNo = (p.wagonNo || '').trim()
         const wagonLabel = wagonNo || 'Unassigned'
+        const isCompletedWagon = wagonNo && completedWagonSet.has(wagonNo)
 
         if (wagonLabel !== currentWagonLabel) {
           groupedRows.push([
             {
-              content: wagonNo ? `Wagon No.: ${wagonLabel}` : 'Wagon No.: Unassigned',
-              colSpan: 9,
+              content: wagonNo ? `Wagon No.: ${wagonLabel}${isCompletedWagon ? '  (Complete)' : ''}` : 'Wagon No.: Unassigned',
+              colSpan: 10,
               styles: {
                 fillColor: [236, 240, 244],
                 textColor: [54, 63, 78],
@@ -384,7 +408,7 @@ export async function generateLoadingPdf(session) {
   doc.setFont('helvetica', 'bold')
   doc.setFontSize(9)
   doc.setTextColor(15, 31, 61)
-  doc.text('WAGON-WISE LOADING SUMMARY', M, y)
+  doc.text(isCompletionReport ? 'WAGON-WISE COMPLETION SUMMARY' : 'WAGON-WISE PROGRESS SUMMARY', M, y)
   y += 5
 
   const wagonRows = []
@@ -395,12 +419,20 @@ export async function generateLoadingPdf(session) {
       const wNos = [...new Set(loaded.map(p => p.wagonNo).filter(Boolean))]
       if (!wNos.length) {
         const loadedWeight = loaded.reduce((s, p) => s + (parseFloat(p.pcWgt) || 0), 0)
-        wagonRows.push(['—', c.consigneeCode, c.consigneeName, sess.destination?.code || '—', loaded.length, Number(loadedWeight.toFixed(3))])
+        wagonRows.push(['—', c.consigneeCode, c.consigneeName, sess.destination?.code || '—', loaded.length, Number(loadedWeight.toFixed(3)), ''])
       } else {
         wNos.forEach(wNo => {
           const platesInWagon = loaded.filter(p => p.wagonNo === wNo)
           const weightInWagon = platesInWagon.reduce((s, p) => s + (parseFloat(p.pcWgt) || 0), 0)
-          wagonRows.push([wNo, c.consigneeCode, c.consigneeName, sess.destination?.code || '—', platesInWagon.length, Number(weightInWagon.toFixed(3))])
+          wagonRows.push([
+            wNo,
+            c.consigneeCode,
+            c.consigneeName,
+            sess.destination?.code || '—',
+            platesInWagon.length,
+            Number(weightInWagon.toFixed(3)),
+            completedWagonSet.has(wNo) ? 'Complete' : '',
+          ])
         })
       }
     }
@@ -408,17 +440,24 @@ export async function generateLoadingPdf(session) {
 
   autoTable(doc, {
     startY: y,
-    head: [['Wagon No.', 'Cons. Code', 'Consignee Name', 'Dest.', 'Plates Loaded', 'Wt. (T)']],
+    head: [['Wagon No.', 'Cons. Code', 'Consignee Name', 'Dest.', 'Plates Loaded', 'Wt. (T)', 'Completed']],
     body: wagonRows,
     headStyles: { fillColor: [15, 31, 61], textColor: 255, fontSize: 8, fontStyle: 'bold' },
     bodyStyles: { fontSize: 8, cellPadding: 2.5 },
+    didParseCell(data) {
+      if (data.section === 'body' && data.column.index === 6 && data.cell.text?.[0]) {
+        data.cell.styles.textColor = [21, 128, 61]
+        data.cell.styles.fontStyle = 'bold'
+      }
+    },
     columnStyles: {
       0: { cellWidth: 40 },
       1: { cellWidth: 26 },
-      2: { cellWidth: 104 },
+      2: { cellWidth: 96 },
       3: { cellWidth: 24 },
       4: { cellWidth: 28, halign: 'center', fontStyle: 'bold' },
       5: { cellWidth: 28, halign: 'center' },
+      6: { cellWidth: 24, halign: 'center' },
     },
     alternateRowStyles: { fillColor: [248, 250, 252] },
     theme: 'striped',
@@ -457,7 +496,8 @@ export async function generateLoadingPdf(session) {
     doc.text(`Page ${p} of ${totalPages}`, PW - M, PH - 5, { align: 'right' })
   }
 
-  doc.save(`BSP_Plate_Loading_${session.rakeId}_${formatDateForFile(new Date())}.pdf`)
+  const reportLabel = isCompletionReport ? 'Completion' : 'Progress'
+  doc.save(`BSP_Plate_Loading_${reportLabel}_${session.rakeId}_${formatDateForFile(new Date())}.pdf`)
 }
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -506,13 +546,13 @@ export function buildWagonPayloads(session) {
   return payloads
 }
 
-export async function submitWagonRequests(payloads, submitFn, onProgress) {
+export async function submitWagonRequests(payloads, submitFn, onProgress, status = 1) {
   const results = { succeeded: [], failed: [] }
 
   await Promise.allSettled(
     payloads.map(async (payload) => {
       try {
-        await submitFn(payload)
+        await submitFn(payload, status)
         results.succeeded.push(payload)
       } catch (err) {
         results.failed.push({ payload, error: err.message })

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useLocation } from 'react-router-dom'
 import AppShell from '../components/layout/AppShell.jsx'
+import Modal from '../components/shared/Modal.jsx'
 import { fetchRakeInfo, fetchLoadingReport, fetchPlateInfo, submitWagonLoad, fetchLoadedDetails, fetchWagonsByRake } from '../api/index.js'
 import { exportSessionJson, generateLoadingPdf, buildWagonPayloads, submitWagonRequests } from '../utils/export.js'
 import { useToast } from '../context/ToastContext.jsx'
@@ -56,7 +57,9 @@ export default function LoadingOperationsPage() {
   const [activeWagon, setActiveWagon] = useState(null)
   const [plateDetail, setPlateDetail] = useState(null)
   const [exporting, setExporting] = useState(false)
-  const [submission, setSubmission] = useState({ status: 'idle', succeeded: 0, failed: 0, total: 0, failedPayloads: [] })
+  const [submission, setSubmission] = useState({ status: 'idle', succeeded: 0, failed: 0, total: 0, failedPayloads: [], submissionType: 1 })
+  const [showCompleteModal, setShowCompleteModal] = useState(false)
+  const [wagonsToComplete, setWagonsToComplete] = useState(new Set())
   const [loadingDestCode, setLoadingDestCode] = useState(null)
 
   const quickEntryRef = useRef(null)
@@ -533,19 +536,116 @@ export default function LoadingOperationsPage() {
     } catch { /* show existing data only */ }
   }
 
-  async function handleComplete() {
+  async function handleSaveProgress() {
     const allSessions = { ...sessions, [session.destination.code]: session }
+    const payloads = buildWagonPayloads({ ...session, allSessions, wagons })
+    if (!payloads.length) {
+      toast.warning('No loaded plates to save.')
+      return
+    }
+    if (!window.confirm(`Save progress for Rake ${session.rakeId}? Loaded data will be stored in the database.`)) return
 
-    const wagonsLoaded = Array.from(new Set(
-      Object.values(allSessions)
-        .flatMap(s => s.consignees)
-        .flatMap(c => c.plates)
-        .filter(p => p.loaded && p.wagonNo)
-        .map(p => p.wagonNo)
-    )).length
+    setSubmission({ status: 'submitting', succeeded: 0, failed: 0, total: payloads.length, failedPayloads: [], submissionType: 1 })
 
-    if (!window.confirm(`${wagonsLoaded} wagons loaded. Proceed to complete?`)) return
-    const done = { ...session, allSessions, wagons, completedAt: new Date().toISOString(), step: 'COMPLETED' }
+    const results = await submitWagonRequests(payloads, submitWagonLoad, ({ succeeded, failed, total }) => {
+      setSubmission(prev => ({ ...prev, succeeded, failed, total }))
+    }, 1)
+
+    if (results.failed.length === 0) {
+      toast.success({ title: 'Progress Saved', message: `${results.succeeded.length} wagon record(s) saved successfully.` })
+      setSubmission({ status: 'saved', succeeded: results.succeeded.length, failed: 0, total: payloads.length, failedPayloads: [], submissionType: 1 })
+      try {
+        const loadedRaw = await fetchLoadedDetails(session.rakeId)
+        loadedDetailsRef.current = loadedRaw
+        const plateWagonMap = {}
+        if (Array.isArray(loadedRaw)) {
+          for (const row of loadedRaw) {
+            const wNo = (row.DISPATCH_NM || '').trim()
+            const pNo = (row.CHILD_PLATE_NO || '').trim()
+            if (wNo && pNo) plateWagonMap[pNo] = wNo
+          }
+        }
+        updateSession(prev => ({
+          ...prev,
+          savedAt: new Date().toISOString(),
+          consignees: prev.consignees.map(c => ({
+            ...c,
+            plates: c.plates.map(p => {
+              if (!p.loaded) {
+                const wagonNo = plateWagonMap[p.plateNo]
+                if (wagonNo) return { ...p, loaded: true, loadedAt: new Date().toISOString(), wagonNo }
+              }
+              return p
+            }),
+          })),
+        }))
+      } catch {
+        // Silent by design; save succeeded already.
+      }
+      return
+    }
+
+    setSubmission({
+      status: 'partial',
+      succeeded: results.succeeded.length,
+      failed: results.failed.length,
+      total: payloads.length,
+      failedPayloads: results.failed.map(f => f.payload),
+      submissionType: 1,
+    })
+  }
+
+  async function submitMixedCompletionRequests(payloads, completedWagonNos, onProgress) {
+    const completedSet = new Set(completedWagonNos)
+    const queued = payloads.map(payload => ({
+      payload,
+      status: completedSet.has(payload.wagonNo) ? 2 : 1,
+    }))
+    const results = { succeeded: [], failed: [] }
+
+    await Promise.allSettled(
+      queued.map(async (entry) => {
+        try {
+          await submitWagonLoad(entry.payload, entry.status)
+          results.succeeded.push(entry)
+        } catch (err) {
+          results.failed.push({ ...entry, error: err.message })
+        }
+        onProgress?.({
+          succeeded: results.succeeded.length,
+          failed: results.failed.length,
+          total: queued.length,
+        })
+      })
+    )
+
+    return results
+  }
+
+  async function handleCompleteWagons() {
+    if (wagonsToComplete.size === 0) {
+      toast.warning('Select at least one wagon to complete.')
+      return
+    }
+
+    const allSessions = { ...sessions, [session.destination.code]: session }
+    const allPayloads = buildWagonPayloads({ ...session, allSessions, wagons })
+    const selectedPayloads = allPayloads.filter(p => wagonsToComplete.has(p.wagonNo))
+    if (!selectedPayloads.length) {
+      toast.warning('No loaded plates found for the selected wagons.')
+      return
+    }
+    const completedWagonNos = [...wagonsToComplete]
+
+    setShowCompleteModal(false)
+    const done = {
+      ...session,
+      allSessions,
+      wagons,
+      completedWagons: completedWagonNos,
+      completedAt: new Date().toISOString(),
+      step: 'COMPLETED',
+    }
     setSession(done)
     setSessions(allSessions)
     saveSession(done)
@@ -553,38 +653,77 @@ export default function LoadingOperationsPage() {
     localStorage.removeItem(SESSION_KEY)
     localStorage.removeItem(SESSIONS_MAP_KEY)
 
-    const payloads = buildWagonPayloads(done)
-    if (!payloads.length) return
-    setSubmission({ status: 'submitting', succeeded: 0, failed: 0, total: payloads.length, failedPayloads: [] })
+    setSubmission({ status: 'submitting', succeeded: 0, failed: 0, total: allPayloads.length, failedPayloads: [], submissionType: 2 })
 
-    const results = await submitWagonRequests(payloads, submitWagonLoad, ({ succeeded, failed, total }) => {
+    const results = await submitMixedCompletionRequests(allPayloads, completedWagonNos, ({ succeeded, failed, total }) => {
       setSubmission(prev => ({ ...prev, succeeded, failed, total }))
     })
 
     setSubmission({
-      status:         results.failed.length === 0 ? 'done' : 'partial',
-      succeeded:      results.succeeded.length,
-      failed:         results.failed.length,
-      total:          payloads.length,
-      failedPayloads: results.failed.map(f => f.payload),
+      status: results.failed.length === 0 ? 'done' : 'partial',
+      succeeded: results.succeeded.length,
+      failed: results.failed.length,
+      total: allPayloads.length,
+      failedPayloads: results.failed.map(f => ({ payload: f.payload, status: f.status })),
+      submissionType: 2,
     })
   }
 
   async function handleRetrySubmission() {
     const payloads = submission.failedPayloads
     if (!payloads.length) return
+    const retryType = submission.submissionType ?? 2
     setSubmission(prev => ({ ...prev, status: 'submitting', succeeded: 0, failed: 0, total: payloads.length, failedPayloads: [] }))
+
+    if (retryType === 2) {
+      const queued = payloads.map(item => (
+        item?.payload && typeof item.status === 'number'
+          ? item
+          : { payload: item, status: 2 }
+      ))
+      const results = { succeeded: [], failed: [] }
+
+      await Promise.allSettled(
+        queued.map(async (entry) => {
+          try {
+            await submitWagonLoad(entry.payload, entry.status)
+            results.succeeded.push(entry)
+          } catch (err) {
+            results.failed.push({ ...entry, error: err.message })
+          }
+          setSubmission(prev => ({
+            ...prev,
+            succeeded: results.succeeded.length,
+            failed: results.failed.length,
+            total: queued.length,
+          }))
+        })
+      )
+
+      setSubmission({
+        status:         results.failed.length === 0 ? 'done' : 'partial',
+        succeeded:      results.succeeded.length,
+        failed:         results.failed.length,
+        total:          queued.length,
+        failedPayloads: results.failed.map(f => ({ payload: f.payload, status: f.status })),
+        submissionType: retryType,
+      })
+      return
+    }
 
     const results = await submitWagonRequests(payloads, submitWagonLoad, ({ succeeded, failed, total }) => {
       setSubmission(prev => ({ ...prev, succeeded, failed, total }))
-    })
+    }, retryType)
+
+    const successStatus = retryType === 1 ? 'saved' : 'done'
 
     setSubmission({
-      status:         results.failed.length === 0 ? 'done' : 'partial',
+      status:         results.failed.length === 0 ? successStatus : 'partial',
       succeeded:      results.succeeded.length,
       failed:         results.failed.length,
       total:          payloads.length,
       failedPayloads: results.failed.map(f => f.payload),
+      submissionType: retryType,
     })
   }
 
@@ -601,7 +740,7 @@ export default function LoadingOperationsPage() {
     setExporting(true)
     try {
       const allSessions = { ...sessions, [session.destination.code]: session }
-      await generateLoadingPdf({ ...session, allSessions, wagons })
+      await generateLoadingPdf({ ...session, allSessions, wagons }, step === 'COMPLETED' ? 'completion' : 'progress')
     } catch (e) { toast.error('PDF failed: ' + e.message) }
     finally { setExporting(false) }
   }
@@ -690,6 +829,7 @@ export default function LoadingOperationsPage() {
   const completedLoadedWeight = completedConsignees.reduce((s, c) =>
     s + c.plates.filter(p => p.loaded && p.pcWgt).reduce((ws, p) => ws + (parseFloat(p.pcWgt) || 0), 0), 0)
   const completedConsigneesWithLoads = completedConsignees.filter(c => c.plates.some(p => p.loaded)).length
+  const completedWagonSet = new Set(step === 'COMPLETED' ? (session?.completedWagons || []) : [])
 
   // Build wagon-wise summary (one row per wagon)
   const wagonSummary = (() => {
@@ -711,6 +851,7 @@ export default function LoadingOperationsPage() {
                 destination: sess.destination,
                 platesCount: 0,
                 totalWeight: 0,
+                isCompleted: completedWagonSet.has(plate.wagonNo),
               }
             }
             wagonMap[plate.wagonNo].platesCount++
@@ -722,7 +863,9 @@ export default function LoadingOperationsPage() {
       })
     })
     
-    return Object.values(wagonMap).sort((a, b) => a.wagonNo.localeCompare(b.wagonNo))
+    return Object.values(wagonMap)
+      .map(w => ({ ...w, isCompleted: completedWagonSet.has(w.wagonNo) }))
+      .sort((a, b) => a.wagonNo.localeCompare(b.wagonNo))
   })()
 
   return (
@@ -873,11 +1016,56 @@ export default function LoadingOperationsPage() {
               <button className="btn btn-secondary btn-sm" onClick={handleExportJson} disabled={exporting}>
                 <JsonIcon /> JSON
               </button>
-              <button className="btn btn-success" onClick={handleComplete}>
+              <button className="btn btn-secondary btn-sm" onClick={handleSaveProgress}>
+                <SaveIcon /> Save Progress
+              </button>
+              <button className="btn btn-success" onClick={() => {
+                const allSess = { ...sessions, [session.destination.code]: session }
+                const wagonsWithPlates = wagons.filter(w =>
+                  Object.values(allSess).some(s => s?.consignees?.some(c => c.plates.some(p => p.loaded && p.wagonNo === w.wagonNo)))
+                )
+                if (!wagonsWithPlates.length) {
+                  toast.warning('No wagons with loaded plates to complete.')
+                  return
+                }
+                setWagonsToComplete(new Set())
+                setShowCompleteModal(true)
+              }}>
                 <CompleteIcon /> Complete
               </button>
             </div>
           </div>
+
+          {submission.status !== 'idle' && submission.submissionType === 1 && (
+            <div style={{ marginBottom: 4 }}>
+              {submission.status === 'submitting' && (
+                <div className="alert alert-info" style={{ alignItems: 'center', gap: 10 }}>
+                  <span className="spinner spinner-sm" />
+                  <span>Saving progress... {submission.succeeded + submission.failed} / {submission.total}</span>
+                </div>
+              )}
+              {submission.status === 'saved' && (
+                <div className="alert alert-success" style={{ justifyContent: 'space-between' }}>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <CheckCircleIcon size={15} />
+                    Progress saved - {submission.succeeded} wagon record{submission.succeeded !== 1 ? 's' : ''} stored. You may continue loading.
+                  </span>
+                  <button className="btn btn-ghost btn-sm" onClick={() => setSubmission(prev => ({ ...prev, status: 'idle' }))}>x</button>
+                </div>
+              )}
+              {submission.status === 'partial' && (
+                <div className="alert alert-danger" style={{ flexDirection: 'column', gap: 8, alignItems: 'flex-start' }}>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <WarnIcon size={15} />
+                    {submission.failed} of {submission.total} save request{submission.failed !== 1 ? 's' : ''} failed. {submission.succeeded} succeeded.
+                  </span>
+                  <button className="btn btn-danger btn-sm" onClick={handleRetrySubmission}>
+                    Retry Failed ({submission.failed})
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
 
           <div className="loading-layout" style={{ flex: 1, minHeight: 0 }}>
             <div className="card consignee-panel" style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -1426,7 +1614,7 @@ export default function LoadingOperationsPage() {
                   {submission.status === 'done' && (
                     <div className="alert alert-success">
                       <CheckCircleIcon size={15} />
-                      <span>All {submission.succeeded} wagon record{submission.succeeded !== 1 ? 's' : ''} submitted successfully.</span>
+                      <span>All {submission.succeeded} wagon record{submission.succeeded !== 1 ? 's' : ''} marked as completed.</span>
                     </div>
                   )}
                   {submission.status === 'partial' && (
@@ -1491,6 +1679,7 @@ export default function LoadingOperationsPage() {
                     <th>Destination</th>
                     <th>Plates Loaded</th>
                     <th>Weight Loaded</th>
+                    <th>Marked Complete</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1513,6 +1702,13 @@ export default function LoadingOperationsPage() {
                       </td>
                       <td className="td-mono" style={{ color: 'var(--green-700)', fontWeight: 600 }}>{w.platesCount}</td>
                       <td className="td-mono" style={{ fontWeight: 600 }}>{w.totalWeight > 0 ? `${w.totalWeight.toFixed(1)}T` : <span style={{ color: 'var(--text-muted)' }}>—</span>}</td>
+                      <td>
+                        {w.isCompleted ? (
+                          <span className="badge badge-success" style={{ fontSize: 10.5 }}>
+                            <span className="badge-dot" />Completed
+                          </span>
+                        ) : <span style={{ color: 'var(--text-muted)' }}>—</span>}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -1569,6 +1765,105 @@ export default function LoadingOperationsPage() {
           </div>
         </div>
       )}
+
+      <Modal
+        open={showCompleteModal}
+        onClose={() => setShowCompleteModal(false)}
+        title="Complete Wagons"
+        size="modal-lg"
+        footer={
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'space-between', width: '100%' }}>
+            <button className="btn btn-ghost btn-sm" onClick={() => {
+              const allSess = session ? { ...sessions, [session.destination.code]: session } : sessions
+              const wagonsWithPlates = wagons.filter(w =>
+                Object.values(allSess).some(s => s?.consignees?.some(c => c.plates.some(p => p.loaded && p.wagonNo === w.wagonNo)))
+              )
+              setWagonsToComplete(new Set(wagonsWithPlates.map(w => w.wagonNo)))
+            }}>Select All</button>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button className="btn btn-ghost btn-sm" onClick={() => setShowCompleteModal(false)}>Cancel</button>
+              <button
+                className="btn btn-success btn-sm"
+                onClick={handleCompleteWagons}
+                disabled={wagonsToComplete.size === 0}
+              >
+                <CompleteIcon /> Complete{wagonsToComplete.size > 0 ? ` (${wagonsToComplete.size})` : ''} Wagon{wagonsToComplete.size !== 1 ? 's' : ''}
+              </button>
+            </div>
+          </div>
+        }
+      >
+        {session && (() => {
+          const allSess = { ...sessions, [session.destination.code]: session }
+          const wagonsWithPlates = wagons.filter(w =>
+            Object.values(allSess).some(s => s?.consignees?.some(c => c.plates.some(p => p.loaded && p.wagonNo === w.wagonNo)))
+          )
+          return (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div className="alert alert-info" style={{ fontSize: 12.5 }}>
+                <InfoIcon size={14} />
+                Select wagons to mark as completed. This is a final action - it confirms loading is done for those wagons.
+              </div>
+              {wagonsWithPlates.length === 0 ? (
+                <div className="empty-state" style={{ padding: '20px 0' }}>
+                  <div className="empty-state-title">No wagons with loaded plates</div>
+                  <div className="empty-state-text">Load plates into wagons before completing.</div>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {wagonsWithPlates.map(w => {
+                    const isSelected = wagonsToComplete.has(w.wagonNo)
+                    const allConsignees = Object.values(allSess).flatMap(s => s?.consignees || [])
+                    const cons = allConsignees.find(c => c.consigneeCode === w.consigneeCode)
+                    const loadedPlatesForWagon = allConsignees
+                      .flatMap(c => c.plates)
+                      .filter(p => p.wagonNo === w.wagonNo && p.loaded)
+                    const platesLoaded = loadedPlatesForWagon.length
+                    const totalWgt = loadedPlatesForWagon
+                      .filter(p => p.pcWgt)
+                      .reduce((sum, p) => sum + (parseFloat(p.pcWgt) || 0), 0)
+                    return (
+                      <div
+                        key={w.wagonNo}
+                        onClick={() => setWagonsToComplete(prev => {
+                          const next = new Set(prev)
+                          next.has(w.wagonNo) ? next.delete(w.wagonNo) : next.add(w.wagonNo)
+                          return next
+                        })}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px',
+                          border: `${isSelected ? '2px' : '1px'} solid ${isSelected ? 'var(--green-400)' : 'var(--border-subtle)'}`,
+                          borderRadius: 'var(--r-md)',
+                          background: isSelected ? 'var(--green-50)' : 'var(--bg-surface)',
+                          cursor: 'pointer', userSelect: 'none', transition: 'all 0.15s ease',
+                        }}
+                      >
+                        <div style={{
+                          width: 18, height: 18, borderRadius: 'var(--r-sm)',
+                          border: `2px solid ${isSelected ? 'var(--green-600)' : 'var(--border-default)'}`,
+                          background: isSelected ? 'var(--green-600)' : 'var(--bg-surface)',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, color: '#fff',
+                        }}>
+                          {isSelected && <CheckIcon size={10} />}
+                        </div>
+                        <WagonIcon size={14} />
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: 13 }}>{w.wagonNo}</div>
+                          {cons && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 1 }}>{cons.consigneeName} · {w.consigneeCode}</div>}
+                        </div>
+                        <div style={{ textAlign: 'right' }}>
+                          <div style={{ fontSize: 12, fontFamily: 'var(--font-mono)', color: 'var(--green-700)', fontWeight: 700 }}>{platesLoaded} plate{platesLoaded !== 1 ? 's' : ''}</div>
+                          {totalWgt > 0 && <div style={{ fontSize: 10.5, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>{totalWgt.toFixed(2)} T</div>}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          )
+        })()}
+      </Modal>
     </AppShell>
   )
 }
@@ -1670,6 +1965,14 @@ function UnlinkIcon({ size = 14 }) {
 
 function CompleteIcon({ size = 14 }) {
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>
+}
+
+function SaveIcon({ size = 14 }) {
+  return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/>
+    <polyline points="17 21 17 13 7 13 7 21"/>
+    <polyline points="7 3 7 8 15 8"/>
+  </svg>
 }
 
 function JsonIcon({ size = 14 }) {
