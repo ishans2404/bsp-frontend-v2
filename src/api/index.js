@@ -152,9 +152,17 @@ function inferTypeFromContext(contextBefore, fieldDefault) {
 
 /**
  * Parse all plate numbers from one field string.
+ * Supports multiple heat numbers with multiple plates each.
+ * 
  * Supported patterns:
- * 1) OK format: B413518#OK-3514900,902,903 or B412382#OK-3503775/1, 775/2, 779/1
- * 2) Non-OK format: B412712-3513103,104,106 or B414939-3528550/1,550/2,551/1
+ * 1) OK format:
+ *    - Single heat: B412382#OK-3503775/1, 775/2, 779/1
+ *    - Multiple heats: B412382#OK-3503775/1, 775/2, 779/1, 780/2  B412046#OK-3499949/2, 955/2
+ * 2) Non-OK format:
+ *    - Single heat: B414939-3528550/1,550/2,551/1
+ *    - Multiple heats: B414939-3528550/1,550/2,551/1,551/2 B412046-3499949/2, 955/2
+ * 
+ * Abbreviated plates (e.g. "775/2" following "3503775/1") are expanded using the prefix.
  */
 function parseFieldPlates(fieldStr, fieldName) {
   if (!fieldStr || typeof fieldStr !== 'string') return []

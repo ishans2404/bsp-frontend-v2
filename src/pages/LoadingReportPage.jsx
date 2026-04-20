@@ -545,6 +545,8 @@ export default function LoadingReportPage() {
                           <th style={{ textAlign: 'right' }}>TEST</th>
                           <th style={{ textAlign: 'right' }}>NORM</th>
                           <th style={{ textAlign: 'right' }}>FIN</th>
+                          <th style={{ textAlign: 'right' }}>RA</th>
+                          <th style={{ textAlign: 'right' }}>TPI</th>
                           <th style={{ textAlign: 'right' }}>OK Plates</th>
                           <th style={{ textAlign: 'right' }}>Non-OK Mix</th>
                           <th>Remark</th>
@@ -592,6 +594,8 @@ export default function LoadingReportPage() {
                               <td className="td-mono" style={{ textAlign: 'right' }}>{o.test ?? '—'}</td>
                               <td className="td-mono" style={{ textAlign: 'right' }}>{o.norm ?? '—'}</td>
                               <td className="td-mono" style={{ textAlign: 'right' }}>{o.fin ?? '—'}</td>
+                              <td className="td-mono" style={{ textAlign: 'right' }}>{o.ra ?? '—'}</td>
+                              <td className="td-mono" style={{ textAlign: 'right' }}>{o.tpi ?? '—'}</td>
                               <td style={{ textAlign: 'right' }}>
                                 {okForOrder > 0
                                   ? <span className="badge badge-success">{okForOrder}</span>
