@@ -528,6 +528,7 @@ export default function LoadingReportPage() {
               </div>
 
               {/* ── Expanded: orders table ── */}
+              {/* developed by ishans2404@gmail.com */}
               {isOpen && (
                 <div>
                   <div className="table-wrapper">
