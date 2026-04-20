@@ -4,13 +4,13 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   server: {
-    proxy: {
-      '/api-proxy': {
-        target: 'https://bspapp.sail-bhilaisteel.com',
-        changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api-proxy/, ''),
-        secure: false,
-      }
-    }
+    // proxy: {
+    //   '/api-proxy': {
+    //     target: 'https://bspapp.sail-bhilaisteel.com',
+    //     changeOrigin: true,
+    //     rewrite: (path) => path.replace(/^\/api-proxy/, ''),
+    //     secure: false,
+    //   }
+    // }
   }
 })
