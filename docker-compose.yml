@@ -7,7 +7,7 @@ services:
       dockerfile: Dockerfile
     container_name: plate-mill-app
     ports:
-      - "3000:3000"
+      - "8703:8703"
     env_file:
       - .env.docker
     environment:
