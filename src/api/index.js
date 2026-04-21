@@ -3,8 +3,7 @@
  * All network calls go through this module.
  */
 
-// const PROXY = '/api-proxy/MES_MOB/APP'
-const PROXY = 'https://bspapp.sail-bhilaisteel.com/MES_MOB/APP'
+const PROXY = import.meta.env.VITE_API_BASE || '/api-proxy/MES_MOB/APP'
 const LOADING_REPORT_CACHE_KEY = 'bsp_loading_report_cache'
 const LOADING_REPORT_CACHE_TTL_MS = 6 * 60 * 60 * 1000 // 6 hours
 
